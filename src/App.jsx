@@ -1,0 +1,901 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
+const APP_VERSION = "1.0";
+const STORAGE_KEY = "reseptiapp.recipes.v1";
+const BACKUP_KEY = "reseptiapp.latestBackupAt.v1";
+
+const emptyRecipe = () => {
+  const now = new Date().toISOString();
+
+  return {
+    id: createId(),
+    title: "",
+    category: "",
+    tags: [],
+    ingredients: "",
+    instructions: "",
+    notes: "",
+    servings: "",
+    prepTime: "",
+    cookTime: "",
+    sourceUrl: "",
+    image: "",
+    favorite: false,
+    createdAt: now,
+    updatedAt: now,
+  };
+};
+
+function createId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+
+  return `recipe-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeRecipe(recipe) {
+  const now = new Date().toISOString();
+
+  return {
+    id: String(recipe?.id || createId()),
+    title: String(recipe?.title || ""),
+    category: String(recipe?.category || ""),
+    tags: Array.isArray(recipe?.tags) ? recipe.tags.map(String) : [],
+    ingredients: String(recipe?.ingredients || ""),
+    instructions: String(recipe?.instructions || ""),
+    notes: String(recipe?.notes || ""),
+    servings: String(recipe?.servings || ""),
+    prepTime: String(recipe?.prepTime || ""),
+    cookTime: String(recipe?.cookTime || ""),
+    sourceUrl: String(recipe?.sourceUrl || ""),
+    image: String(recipe?.image || ""),
+    favorite: Boolean(recipe?.favorite),
+    createdAt: String(recipe?.createdAt || now),
+    updatedAt: String(recipe?.updatedAt || now),
+  };
+}
+
+function loadRecipes() {
+  try {
+    // Reseptidata tallennetaan selaimen localStorageen tällä avaimella.
+    // Data ei ole lähdekoodissa, joten sovelluksen päivitys ei itsessään nollaa reseptejä.
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (!stored) return [];
+
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed) ? parsed.map(normalizeRecipe) : [];
+  } catch (error) {
+    console.error("Reseptien lukeminen epäonnistui", error);
+    return [];
+  }
+}
+
+function saveRecipes(recipes) {
+  // Tämä on ainoa paikka, jossa reseptilista kirjoitetaan selaimen localStorageen.
+  // Kun Supabase lisätään myöhemmin, tämän rajapinnan voi korvata ilman että reseptin rakenne muuttuu.
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(recipes));
+}
+
+function formatDateTime(value) {
+  if (!value) return "";
+
+  return new Intl.DateTimeFormat("fi-FI", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
+function splitTags(value) {
+  return value
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
+function getBackupDate() {
+  return window.localStorage.getItem(BACKUP_KEY) || "";
+}
+
+async function resizeRecipeImage(file) {
+  const imageUrl = URL.createObjectURL(file);
+
+  try {
+    const image = await loadImage(imageUrl);
+    const scale = Math.min(1, 1200 / image.width);
+    const width = Math.round(image.width * scale);
+    const height = Math.round(image.height * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0, width, height);
+
+    const webp = canvas.toDataURL("image/webp", 0.82);
+    if (webp.startsWith("data:image/webp")) {
+      return webp;
+    }
+
+    return canvas.toDataURL("image/jpeg", 0.84);
+  } finally {
+    URL.revokeObjectURL(imageUrl);
+  }
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = src;
+  });
+}
+
+function recipeMatches(recipe, searchTerm, categoryFilter, tagFilter, favoritesOnly) {
+  if (favoritesOnly && !recipe.favorite) return false;
+  if (categoryFilter && recipe.category !== categoryFilter) return false;
+  if (tagFilter && !recipe.tags.includes(tagFilter)) return false;
+
+  const term = searchTerm.trim().toLowerCase();
+  if (!term) return true;
+
+  const searchable = [
+    recipe.title,
+    recipe.ingredients,
+    recipe.category,
+    recipe.tags.join(" "),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  return searchable.includes(term);
+}
+
+export default function App() {
+  const [recipes, setRecipes] = useState(loadRecipes);
+  const [selectedId, setSelectedId] = useState("");
+  const [mode, setMode] = useState("view");
+  const [draft, setDraft] = useState(emptyRecipe);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const [tagFilter, setTagFilter] = useState("");
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [backupDate, setBackupDate] = useState(getBackupDate);
+  const [status, setStatus] = useState("");
+  const importInputRef = useRef(null);
+
+  useEffect(() => {
+    saveRecipes(recipes);
+  }, [recipes]);
+
+  useEffect(() => {
+    if (!selectedId && recipes.length > 0) {
+      setSelectedId(recipes[0].id);
+    }
+
+    if (selectedId && !recipes.some((recipe) => recipe.id === selectedId)) {
+      setSelectedId(recipes[0]?.id || "");
+    }
+  }, [recipes, selectedId]);
+
+  const selectedRecipe = recipes.find((recipe) => recipe.id === selectedId);
+
+  const categories = useMemo(
+    () =>
+      [...new Set(recipes.map((recipe) => recipe.category).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b, "fi")
+      ),
+    [recipes]
+  );
+
+  const tags = useMemo(
+    () =>
+      [...new Set(recipes.flatMap((recipe) => recipe.tags).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b, "fi")
+      ),
+    [recipes]
+  );
+
+  const filteredRecipes = useMemo(
+    () =>
+      recipes
+        .filter((recipe) =>
+          recipeMatches(recipe, searchTerm, categoryFilter, tagFilter, favoritesOnly)
+        )
+        .sort((a, b) => {
+          if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
+          return new Date(b.updatedAt) - new Date(a.updatedAt);
+        }),
+    [recipes, searchTerm, categoryFilter, tagFilter, favoritesOnly]
+  );
+
+  function startNewRecipe() {
+    setDraft(emptyRecipe());
+    setMode("form");
+    setSelectedId("");
+    setStatus("");
+  }
+
+  function startEditRecipe(recipe) {
+    setDraft({ ...recipe, tags: [...recipe.tags] });
+    setMode("form");
+    setSelectedId(recipe.id);
+    setStatus("");
+  }
+
+  function cancelForm() {
+    setMode("view");
+    setDraft(emptyRecipe());
+  }
+
+  function saveDraft(event) {
+    event.preventDefault();
+
+    const now = new Date().toISOString();
+    const cleanDraft = normalizeRecipe({
+      ...draft,
+      title: draft.title.trim(),
+      category: draft.category.trim(),
+      tags: draft.tags.map((tag) => tag.trim()).filter(Boolean),
+      updatedAt: now,
+      createdAt: draft.createdAt || now,
+    });
+
+    if (!cleanDraft.title) {
+      setStatus("Anna reseptille nimi ennen tallennusta.");
+      return;
+    }
+
+    setRecipes((currentRecipes) => {
+      const exists = currentRecipes.some((recipe) => recipe.id === cleanDraft.id);
+      if (exists) {
+        return currentRecipes.map((recipe) => (recipe.id === cleanDraft.id ? cleanDraft : recipe));
+      }
+
+      return [cleanDraft, ...currentRecipes];
+    });
+
+    setSelectedId(cleanDraft.id);
+    setMode("view");
+    setStatus("Resepti tallennettu.");
+  }
+
+  function deleteRecipe(recipe) {
+    const ok = window.confirm(`Poistetaanko resepti "${recipe.title}"?`);
+    if (!ok) return;
+
+    setRecipes((currentRecipes) => currentRecipes.filter((item) => item.id !== recipe.id));
+    setMode("view");
+    setStatus("Resepti poistettu.");
+  }
+
+  function toggleFavorite(recipe) {
+    const now = new Date().toISOString();
+
+    setRecipes((currentRecipes) =>
+      currentRecipes.map((item) =>
+        item.id === recipe.id ? { ...item, favorite: !item.favorite, updatedAt: now } : item
+      )
+    );
+  }
+
+  function exportBackup() {
+    const exportedAt = new Date().toISOString();
+    const payload = {
+      app: "ReseptiApp",
+      version: APP_VERSION,
+      exportedAt,
+      recipes,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `reseptiapp-varmuuskopio-${exportedAt.slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+
+    window.localStorage.setItem(BACKUP_KEY, exportedAt);
+    setBackupDate(exportedAt);
+    setStatus("Varmuuskopio ladattu JSON-tiedostona.");
+  }
+
+  async function importBackup(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const importedRecipes = parseImportedRecipes(parsed);
+
+      if (importedRecipes.length === 0) {
+        setStatus("Tiedostosta ei löytynyt reseptejä.");
+        return;
+      }
+
+      const existingIds = new Set(recipes.map((recipe) => recipe.id));
+      const conflictCount = importedRecipes.filter((recipe) => existingIds.has(recipe.id)).length;
+      let overwriteConflicts = false;
+
+      if (conflictCount > 0) {
+        overwriteConflicts = window.confirm(
+          `Tiedostossa on ${conflictCount} reseptiä, jotka ovat jo sovelluksessa. ` +
+            "OK korvaa nämä reseptit. Peruuta tuo vain uudet reseptit."
+        );
+      }
+
+      const byId = new Map(recipes.map((recipe) => [recipe.id, recipe]));
+      let added = 0;
+      let replaced = 0;
+
+      importedRecipes.forEach((recipe) => {
+        const exists = byId.has(recipe.id);
+        if (exists && !overwriteConflicts) return;
+
+        byId.set(recipe.id, recipe);
+        if (exists) {
+          replaced += 1;
+        } else {
+          added += 1;
+        }
+      });
+
+      setRecipes([...byId.values()].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)));
+      setStatus(`Tuonti valmis. Lisätty ${added}, korvattu ${replaced}.`);
+    } catch (error) {
+      console.error("Varmuuskopion tuonti epäonnistui", error);
+      setStatus("Varmuuskopion tuonti epäonnistui. Tarkista JSON-tiedosto.");
+    } finally {
+      event.target.value = "";
+    }
+  }
+
+  function parseImportedRecipes(parsed) {
+    const source = Array.isArray(parsed) ? parsed : parsed?.recipes;
+    if (!Array.isArray(source)) return [];
+
+    const byId = new Map();
+    source.forEach((recipe) => {
+      const normalized = normalizeRecipe(recipe);
+      byId.set(normalized.id, normalized);
+    });
+
+    return [...byId.values()];
+  }
+
+  return (
+    <div className="app-shell">
+      <header className="app-header">
+        <div>
+          <p className="eyebrow">Omat reseptit</p>
+          <h1>ReseptiApp</h1>
+        </div>
+        <span className="version">Versio {APP_VERSION}</span>
+      </header>
+
+      <section className="backup-bar" aria-label="Varmuuskopiot">
+        <div>
+          <strong>Muista ottaa varmuuskopio säännöllisesti.</strong>
+          <p>
+            Viimeisin varmuuskopio:{" "}
+            {backupDate ? formatDateTime(backupDate) : "ei vielä merkitty"}
+          </p>
+        </div>
+        <div className="backup-actions">
+          <button
+            className="secondary-button"
+            type="button"
+            aria-label="Export backup"
+            onClick={exportBackup}
+          >
+            Vie varmuuskopio
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            aria-label="Import backup"
+            onClick={() => importInputRef.current?.click()}
+          >
+            Tuo varmuuskopio
+          </button>
+          <input
+            ref={importInputRef}
+            className="hidden-input"
+            type="file"
+            accept="application/json,.json"
+            onChange={importBackup}
+          />
+        </div>
+      </section>
+
+      {status && <p className="status-message">{status}</p>}
+
+      <main className="workspace">
+        <aside className="recipe-list-panel" aria-label="Reseptilista">
+          <div className="list-heading">
+            <div>
+              <h2>Reseptit</h2>
+              <p>{recipes.length} tallennettua</p>
+            </div>
+            <button className="primary-button" type="button" onClick={startNewRecipe}>
+              Uusi resepti
+            </button>
+          </div>
+
+          <div className="filters">
+            <label>
+              Haku
+              <input
+                type="search"
+                placeholder="Nimi, raaka-aine, kategoria tai tagi"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+              />
+            </label>
+            <label>
+              Kategoria
+              <select
+                value={categoryFilter}
+                onChange={(event) => setCategoryFilter(event.target.value)}
+              >
+                <option value="">Kaikki kategoriat</option>
+                {categories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Tagi
+              <select value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}>
+                <option value="">Kaikki tagit</option>
+                {tags.map((tag) => (
+                  <option key={tag} value={tag}>
+                    {tag}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={favoritesOnly}
+                onChange={(event) => setFavoritesOnly(event.target.checked)}
+              />
+              Vain suosikit
+            </label>
+          </div>
+
+          <div className="recipe-list">
+            {filteredRecipes.length === 0 && (
+              <div className="empty-state">
+                <p>Ei reseptejä tällä haulla.</p>
+              </div>
+            )}
+
+            {filteredRecipes.map((recipe) => (
+              <button
+                className={`recipe-card ${selectedId === recipe.id ? "is-selected" : ""}`}
+                type="button"
+                key={recipe.id}
+                onClick={() => {
+                  setSelectedId(recipe.id);
+                  setMode("view");
+                }}
+              >
+                <span className="recipe-card-title">
+                  {recipe.favorite ? "★ " : ""}
+                  {recipe.title}
+                </span>
+                <span className="recipe-card-meta">
+                  {recipe.category || "Ei kategoriaa"}
+                  {recipe.servings ? ` · ${recipe.servings}` : ""}
+                </span>
+                {recipe.tags.length > 0 && (
+                  <span className="tag-row">
+                    {recipe.tags.slice(0, 3).map((tag) => (
+                      <span className="tag" key={tag}>
+                        {tag}
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <section className="detail-panel" aria-label="Resepti">
+          {mode === "form" ? (
+            <RecipeForm
+              draft={draft}
+              setDraft={setDraft}
+              isEditing={Boolean(selectedId)}
+              categories={categories}
+              onSave={saveDraft}
+              onCancel={cancelForm}
+              setStatus={setStatus}
+            />
+          ) : selectedRecipe ? (
+            <RecipeView
+              recipe={selectedRecipe}
+              onEdit={() => startEditRecipe(selectedRecipe)}
+              onDelete={() => deleteRecipe(selectedRecipe)}
+              onFavorite={() => toggleFavorite(selectedRecipe)}
+            />
+          ) : (
+            <div className="empty-detail">
+              <h2>Aloita lisäämällä resepti</h2>
+              <button className="primary-button" type="button" onClick={startNewRecipe}>
+                Uusi resepti
+              </button>
+            </div>
+          )}
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function RecipeView({ recipe, onEdit, onDelete, onFavorite }) {
+  return (
+    <article className="recipe-view">
+      <div className="recipe-actions no-print">
+        <button className="secondary-button" type="button" onClick={onFavorite}>
+          {recipe.favorite ? "Poista suosikeista" : "Lisää suosikiksi"}
+        </button>
+        <button className="secondary-button" type="button" onClick={onEdit}>
+          Muokkaa
+        </button>
+        <button className="danger-button" type="button" onClick={onDelete}>
+          Poista
+        </button>
+        <button className="secondary-button" type="button" onClick={() => window.print()}>
+          Tulosta
+        </button>
+      </div>
+
+      {recipe.image && <img className="recipe-image" src={recipe.image} alt="" />}
+
+      <div className="recipe-title-row">
+        <div>
+          <p className="eyebrow">{recipe.category || "Ei kategoriaa"}</p>
+          <h2>{recipe.title}</h2>
+        </div>
+        {recipe.favorite && <span className="favorite-mark">★ Suosikki</span>}
+      </div>
+
+      <div className="quick-facts">
+        <Fact label="Annoksia" value={recipe.servings} />
+        <Fact label="Valmistelu" value={recipe.prepTime} />
+        <Fact label="Kypsennys" value={recipe.cookTime} />
+      </div>
+
+      {recipe.tags.length > 0 && (
+        <div className="tag-row large">
+          {recipe.tags.map((tag) => (
+            <span className="tag" key={tag}>
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <section className="recipe-section">
+        <h3>Raaka-aineet</h3>
+        <RecipeText value={recipe.ingredients || "Ei raaka-aineita."} />
+      </section>
+
+      <section className="recipe-section">
+        <h3>Ohjeet</h3>
+        <RecipeText value={recipe.instructions || "Ei ohjeita."} />
+      </section>
+
+      {recipe.notes && (
+        <section className="recipe-section">
+          <h3>Muistiinpanot</h3>
+          <RecipeText value={recipe.notes} />
+        </section>
+      )}
+
+      {recipe.sourceUrl && (
+        <section className="recipe-section no-print">
+          <h3>Lähde</h3>
+          <a href={recipe.sourceUrl} target="_blank" rel="noreferrer">
+            {recipe.sourceUrl}
+          </a>
+        </section>
+      )}
+
+      <p className="updated-at">Päivitetty {formatDateTime(recipe.updatedAt)}</p>
+    </article>
+  );
+}
+
+function Fact({ label, value }) {
+  return (
+    <div className="fact">
+      <span>{label}</span>
+      <strong>{value || "-"}</strong>
+    </div>
+  );
+}
+
+function RecipeText({ value }) {
+  const blocks = createTextBlocks(value);
+
+  return (
+    <div className="formatted-text">
+      {blocks.map((block, blockIndex) => {
+        if (block.type === "ordered") {
+          return (
+            <ol key={blockIndex} start={block.start}>
+              {block.items.map((item, itemIndex) => (
+                <li key={itemIndex}>
+                  <span className="preline">{item}</span>
+                </li>
+              ))}
+            </ol>
+          );
+        }
+
+        if (block.type === "unordered") {
+          return (
+            <ul key={blockIndex}>
+              {block.items.map((item, itemIndex) => (
+                <li key={itemIndex}>
+                  <span className="preline">{item}</span>
+                </li>
+              ))}
+            </ul>
+          );
+        }
+
+        return (
+          <p className="preline" key={blockIndex}>
+            {block.text}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+function createTextBlocks(value) {
+  const lines = String(value || "").split(/\r?\n/);
+  const blocks = [];
+  let paragraphLines = [];
+  let currentList = null;
+
+  function flushParagraph() {
+    if (paragraphLines.length === 0) return;
+    blocks.push({ type: "paragraph", text: paragraphLines.join("\n") });
+    paragraphLines = [];
+  }
+
+  lines.forEach((rawLine) => {
+    const line = rawLine.trim();
+
+    if (!line) {
+      flushParagraph();
+      currentList = null;
+      return;
+    }
+
+    const numbered = rawLine.match(/^\s*(\d+)[.)]\s+(.*)$/);
+    if (numbered) {
+      flushParagraph();
+
+      if (!currentList || currentList.type !== "ordered") {
+        currentList = {
+          type: "ordered",
+          start: Number(numbered[1]),
+          items: [],
+        };
+        blocks.push(currentList);
+      }
+
+      currentList.items.push(numbered[2].trim());
+      return;
+    }
+
+    const bulleted = rawLine.match(/^\s*[-*]\s+(.*)$/);
+    if (bulleted) {
+      flushParagraph();
+
+      if (!currentList || currentList.type !== "unordered") {
+        currentList = { type: "unordered", items: [] };
+        blocks.push(currentList);
+      }
+
+      currentList.items.push(bulleted[1].trim());
+      return;
+    }
+
+    if (currentList && currentList.items.length > 0) {
+      const lastIndex = currentList.items.length - 1;
+      currentList.items[lastIndex] = `${currentList.items[lastIndex]}\n${line}`;
+      return;
+    }
+
+    paragraphLines.push(line);
+  });
+
+  flushParagraph();
+  return blocks;
+}
+
+function RecipeForm({ draft, setDraft, isEditing, categories, onSave, onCancel, setStatus }) {
+  const [imageStatus, setImageStatus] = useState("");
+  const [tagsText, setTagsText] = useState(draft.tags.join(", "));
+
+  useEffect(() => {
+    setTagsText(draft.tags.join(", "));
+  }, [draft.id]);
+
+  function updateField(field, value) {
+    setDraft((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateTags(value) {
+    setTagsText(value);
+    updateField("tags", splitTags(value));
+  }
+
+  async function handleImageChange(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setImageStatus("Kuvaa pienennetään...");
+
+    try {
+      const resizedImage = await resizeRecipeImage(file);
+      updateField("image", resizedImage);
+      setImageStatus("Kuva lisätty.");
+      setStatus("");
+    } catch (error) {
+      console.error("Kuvan käsittely epäonnistui", error);
+      setImageStatus("");
+      setStatus("Kuvan lisääminen epäonnistui.");
+    } finally {
+      event.target.value = "";
+    }
+  }
+
+  return (
+    <form className="recipe-form" onSubmit={onSave}>
+      <div className="form-title-row">
+        <div>
+          <p className="eyebrow">Resepti</p>
+          <h2>{isEditing ? "Muokkaa reseptiä" : "Uusi resepti"}</h2>
+        </div>
+        <div className="form-actions">
+          <button className="secondary-button" type="button" onClick={onCancel}>
+            Peruuta
+          </button>
+          <button className="primary-button" type="submit">
+            Tallenna
+          </button>
+        </div>
+      </div>
+
+      <div className="form-grid">
+        <label className="wide">
+          Nimi
+          <input
+            required
+            value={draft.title}
+            onChange={(event) => updateField("title", event.target.value)}
+          />
+        </label>
+
+        <label>
+          Kategoria
+          <input
+            list="recipe-categories"
+            value={draft.category}
+            onChange={(event) => updateField("category", event.target.value)}
+          />
+          <datalist id="recipe-categories">
+            {categories.map((category) => (
+              <option key={category} value={category} />
+            ))}
+          </datalist>
+        </label>
+
+        <label>
+          Tagit
+          <input
+            placeholder="arki, nopea, kasvis"
+            value={tagsText}
+            onChange={(event) => updateTags(event.target.value)}
+          />
+        </label>
+
+        <label>
+          Annokset
+          <input
+            value={draft.servings}
+            onChange={(event) => updateField("servings", event.target.value)}
+          />
+        </label>
+
+        <label>
+          Valmisteluaika
+          <input
+            value={draft.prepTime}
+            onChange={(event) => updateField("prepTime", event.target.value)}
+          />
+        </label>
+
+        <label>
+          Kypsennysaika
+          <input
+            value={draft.cookTime}
+            onChange={(event) => updateField("cookTime", event.target.value)}
+          />
+        </label>
+
+        <label className="wide">
+          Lähdelinkki
+          <input
+            type="url"
+            value={draft.sourceUrl}
+            onChange={(event) => updateField("sourceUrl", event.target.value)}
+          />
+        </label>
+
+        <label className="wide">
+          Raaka-aineet
+          <textarea
+            rows="7"
+            value={draft.ingredients}
+            onChange={(event) => updateField("ingredients", event.target.value)}
+          />
+        </label>
+
+        <label className="wide">
+          Ohjeet
+          <textarea
+            rows="9"
+            value={draft.instructions}
+            onChange={(event) => updateField("instructions", event.target.value)}
+          />
+        </label>
+
+        <label className="wide">
+          Muistiinpanot
+          <textarea
+            rows="4"
+            value={draft.notes}
+            onChange={(event) => updateField("notes", event.target.value)}
+          />
+        </label>
+      </div>
+
+      <section className="image-box">
+        <div>
+          <h3>Kuva</h3>
+        </div>
+        <div className="image-actions">
+          <label className="file-button">
+            Lisää kuva
+            <input type="file" accept="image/*" onChange={handleImageChange} />
+          </label>
+          {draft.image && (
+            <button className="secondary-button" type="button" onClick={() => updateField("image", "")}>
+              Poista kuva
+            </button>
+          )}
+        </div>
+        {imageStatus && <p className="image-status">{imageStatus}</p>}
+        {draft.image && <img className="image-preview" src={draft.image} alt="" />}
+      </section>
+    </form>
+  );
+}
