@@ -93,6 +93,20 @@ Reseptin katselunäkymässä raaka-aineiden kohdalla voi vaihtaa annosmäärää
 
 Skaalaus ei muuta alkuperäistä tallennettua reseptiä. Se on tarkoitettu ruoanlaiton avuksi katselunäkymässä.
 
+## Kuvan lisääminen
+
+Reseptiin voi lisätä yhden kuvan kolmella tavalla:
+
+- valitse kuva tiedostona painikkeella `Lisää kuva`
+- kopioi kuva ja paina reseptilomakkeessa `Liitä kuva`
+- kopioi kuva ja liitä se kuvan alueelle näppäimillä `Ctrl + V`
+
+Sovellus pienentää kuvan ennen tallennusta. Kuva tallennetaan reseptin mukana, ei pelkkänä linkkinä.
+
+## Reseptilista
+
+Reseptilista on ryhmitelty kategorioiden mukaan. Kategoriat ja reseptien nimet järjestetään aakkosittain.
+
 ## Build
 
 Tee tuotantoversio:

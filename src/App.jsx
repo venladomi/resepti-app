@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const APP_VERSION = "1.3";
+const APP_VERSION = "1.4";
 const STORAGE_KEY = "reseptiapp.recipes.v1";
 const BACKUP_KEY = "reseptiapp.latestBackupAt.v1";
 
@@ -91,6 +91,14 @@ function splitTags(value) {
     .split(",")
     .map((tag) => tag.trim())
     .filter(Boolean);
+}
+
+function compareFinnish(a, b) {
+  return a.localeCompare(b, "fi", { sensitivity: "base" });
+}
+
+function getCategoryLabel(recipe) {
+  return recipe.category.trim() || "Ilman kategoriaa";
 }
 
 function getBackupDate() {
@@ -312,16 +320,35 @@ export default function App() {
 
   const filteredRecipes = useMemo(
     () =>
-      recipes
-        .filter((recipe) =>
-          recipeMatches(recipe, searchTerm, categoryFilter, tagFilter, favoritesOnly)
-        )
-        .sort((a, b) => {
-          if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
-          return new Date(b.updatedAt) - new Date(a.updatedAt);
-        }),
+      recipes.filter((recipe) =>
+        recipeMatches(recipe, searchTerm, categoryFilter, tagFilter, favoritesOnly)
+      ),
     [recipes, searchTerm, categoryFilter, tagFilter, favoritesOnly]
   );
+
+  const recipeGroups = useMemo(() => {
+    const groupsByCategory = new Map();
+
+    filteredRecipes.forEach((recipe) => {
+      const category = getCategoryLabel(recipe);
+      if (!groupsByCategory.has(category)) {
+        groupsByCategory.set(category, []);
+      }
+
+      groupsByCategory.get(category).push(recipe);
+    });
+
+    return [...groupsByCategory.entries()]
+      .map(([category, groupRecipes]) => ({
+        category,
+        recipes: groupRecipes.sort((a, b) => compareFinnish(a.title, b.title)),
+      }))
+      .sort((a, b) => {
+        if (a.category === "Ilman kategoriaa") return 1;
+        if (b.category === "Ilman kategoriaa") return -1;
+        return compareFinnish(a.category, b.category);
+      });
+  }, [filteredRecipes]);
 
   function startNewRecipe() {
     setDraft(emptyRecipe());
@@ -591,18 +618,26 @@ export default function App() {
               </div>
             )}
 
-            {filteredRecipes.map((recipe) => (
-              <button
-                className={`recipe-card ${selectedId === recipe.id ? "is-selected" : ""}`}
-                type="button"
-                key={recipe.id}
-                onClick={() => {
-                  setSelectedId(recipe.id);
-                  setMode("view");
-                }}
-              >
-                <span className="recipe-card-title">{recipe.title}</span>
-              </button>
+            {recipeGroups.map((group) => (
+              <section className="recipe-group" key={group.category}>
+                <h3 className="recipe-group-title">
+                  <span>{group.category}</span>
+                  <span>{group.recipes.length}</span>
+                </h3>
+                {group.recipes.map((recipe) => (
+                  <button
+                    className={`recipe-card ${selectedId === recipe.id ? "is-selected" : ""}`}
+                    type="button"
+                    key={recipe.id}
+                    onClick={() => {
+                      setSelectedId(recipe.id);
+                      setMode("view");
+                    }}
+                  >
+                    <span className="recipe-card-title">{recipe.title}</span>
+                  </button>
+                ))}
+              </section>
             ))}
           </div>
         </aside>
@@ -901,24 +936,66 @@ function RecipeForm({ draft, setDraft, isEditing, categories, onSave, onCancel, 
     updateField("tags", splitTags(value));
   }
 
-  async function handleImageChange(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
+  async function saveImageFromBlob(blob, successMessage) {
     setImageStatus("Kuvaa pienennetään...");
 
     try {
-      const resizedImage = await resizeRecipeImage(file);
+      const imageFile =
+        blob instanceof File
+          ? blob
+          : new File([blob], "liitetty-kuva", { type: blob.type || "image/png" });
+      const resizedImage = await resizeRecipeImage(imageFile);
       updateField("image", resizedImage);
-      setImageStatus("Kuva lisätty.");
+      setImageStatus(successMessage);
       setStatus("");
     } catch (error) {
       console.error("Kuvan käsittely epäonnistui", error);
       setImageStatus("");
       setStatus("Kuvan lisääminen epäonnistui.");
-    } finally {
-      event.target.value = "";
     }
+  }
+
+  async function handleImageChange(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    await saveImageFromBlob(file, "Kuva lisätty.");
+    event.target.value = "";
+  }
+
+  async function pasteImageFromClipboard() {
+    try {
+      if (!navigator.clipboard?.read) {
+        setStatus("Selaimesi ei salli kuvan lukemista leikepöydältä. Kokeile Ctrl+V kuvan kohdalla.");
+        return;
+      }
+
+      const clipboardItems = await navigator.clipboard.read();
+
+      for (const item of clipboardItems) {
+        const imageType = item.types.find((type) => type.startsWith("image/"));
+        if (imageType) {
+          const imageBlob = await item.getType(imageType);
+          await saveImageFromBlob(imageBlob, "Kuva liitetty leikepöydältä.");
+          return;
+        }
+      }
+
+      setStatus("Leikepöydältä ei löytynyt kuvaa.");
+    } catch (error) {
+      console.error("Kuvan liittäminen epäonnistui", error);
+      setImageStatus("");
+      setStatus("Kuvan liittäminen ei onnistunut. Kopioi varsinainen kuva tai lisää se tiedostona.");
+    }
+  }
+
+  function handleImagePaste(event) {
+    const files = [...(event.clipboardData?.files || [])];
+    const pastedImage = files.find((file) => file.type.startsWith("image/"));
+    if (!pastedImage) return;
+
+    event.preventDefault();
+    saveImageFromBlob(pastedImage, "Kuva liitetty leikepöydältä.");
   }
 
   return (
@@ -1032,7 +1109,12 @@ function RecipeForm({ draft, setDraft, isEditing, categories, onSave, onCancel, 
         </label>
       </div>
 
-      <section className="image-box">
+      <section
+        className="image-box"
+        tabIndex="0"
+        onPaste={handleImagePaste}
+        aria-label="Reseptin kuva"
+      >
         <div>
           <h3>Kuva</h3>
         </div>
@@ -1041,6 +1123,9 @@ function RecipeForm({ draft, setDraft, isEditing, categories, onSave, onCancel, 
             Lisää kuva
             <input type="file" accept="image/*" onChange={handleImageChange} />
           </label>
+          <button className="secondary-button" type="button" onClick={pasteImageFromClipboard}>
+            Liitä kuva
+          </button>
           {draft.image && (
             <button className="secondary-button" type="button" onClick={() => updateField("image", "")}>
               Poista kuva
