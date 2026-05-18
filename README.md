@@ -149,7 +149,19 @@ Sovelluksessa on myös `Tuo varmuuskopio` -painike. Sillä voit tuoda aiemmin ta
 
 Tuonti ei korvaa olemassa olevia reseptejä ilman varoitusta. Jos tuontitiedostossa on samalla tunnuksella olevia reseptejä, sovellus kysyy ennen korvaamista.
 
+Jos sovelluksessa on jo paljon reseptejä, tuonti varmistetaan erikseen ja sovellus muistuttaa ottamaan varmuuskopion ensin.
+
 Muista ottaa varmuuskopio säännöllisesti.
+
+Sovellus näyttää varoituksen, jos varmuuskopiota ei ole vielä tehty tai viimeisimmästä varmuuskopiosta on yli 14 päivää.
+
+## Reseptin tuonti tekstistä
+
+Painikkeella `Tuo tekstistä` voi liittää reseptin tekstin yhteen kenttään. Sovellus yrittää jakaa tekstistä nimen, annokset, raaka-aineet, ohjeet, ajat ja lähdelinkin.
+
+Tuonti ei tallenna reseptiä heti. Se avaa esitäytetyn reseptilomakkeen, jossa tiedot voi tarkistaa ja korjata ennen tallennusta.
+
+Tekstintuonti toimii parhaiten, kun tekstissä on selkeät otsikot kuten `Raaka-aineet` ja `Ohjeet`.
 
 ## Reseptin tietorakenne
 

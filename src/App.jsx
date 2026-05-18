@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const APP_VERSION = "1.4";
+const APP_VERSION = "1.5";
 const STORAGE_KEY = "reseptiapp.recipes.v1";
 const BACKUP_KEY = "reseptiapp.latestBackupAt.v1";
+const BACKUP_STALE_DAYS = 14;
+const IMPORT_WARNING_RECIPE_COUNT = 10;
 
 const emptyRecipe = () => {
   const now = new Date().toISOString();
@@ -103,6 +105,33 @@ function getCategoryLabel(recipe) {
 
 function getBackupDate() {
   return window.localStorage.getItem(BACKUP_KEY) || "";
+}
+
+function getBackupStatus(value) {
+  if (!value) {
+    return {
+      stale: true,
+      message: "Varmuuskopiota ei ole vielä tehty.",
+    };
+  }
+
+  const backupTime = new Date(value).getTime();
+  if (!Number.isFinite(backupTime)) {
+    return {
+      stale: true,
+      message: "Varmuuskopion päivämäärää ei voitu lukea.",
+    };
+  }
+
+  const ageInDays = Math.floor((Date.now() - backupTime) / (1000 * 60 * 60 * 24));
+  if (ageInDays >= BACKUP_STALE_DAYS) {
+    return {
+      stale: true,
+      message: `Varmuuskopiosta on ${ageInDays} päivää. Vie uusi varmuuskopio.`,
+    };
+  }
+
+  return { stale: false, message: "" };
 }
 
 function parsePositiveNumber(value) {
@@ -273,6 +302,114 @@ function recipeMatches(recipe, searchTerm, categoryFilter, tagFilter, favoritesO
   return searchable.includes(term);
 }
 
+function getTextSection(line) {
+  const normalized = line
+    .toLowerCase()
+    .replace(/[:：]/g, "")
+    .trim();
+
+  if (/^(raaka-aineet|ainekset|tarvikkeet|ingredients)$/.test(normalized)) return "ingredients";
+  if (/^(ohje|ohjeet|valmistus|valmistusohje|tee näin|instructions)$/.test(normalized)) {
+    return "instructions";
+  }
+  if (/^(vinkit|vinkki|muistiinpanot|huomiot|notes)$/.test(normalized)) return "notes";
+
+  return "";
+}
+
+function stripRecipeTextBullet(line) {
+  return line.replace(/^\s*(?:[-*•◆◇♦◦▪▫🔸]\s*)/, "").trim();
+}
+
+function lineStartsWithAmount(line) {
+  const stripped = stripRecipeTextBullet(line);
+  return new RegExp(`^(${AMOUNT_PATTERN})(\\s|$)`, "u").test(stripped);
+}
+
+function extractServingsFromLine(line) {
+  const match = line.match(/(\d+(?:[,.]\d+)?(?:\s*[-–]\s*\d+(?:[,.]\d+)?)?)\s*(annosta|annos|hlö|henkilölle)/i);
+  return match ? `${match[1].replace(/\s+/g, "")} annosta` : "";
+}
+
+function extractTimeValue(line) {
+  const match = line.match(/(?:aika|time|kesto|valmistus|paisto|kypsennys)[\s:：-]*(.+)$/i);
+  if (match?.[1]) return match[1].trim();
+
+  const fallback = line.match(/(\d+\s*(?:min|h|t|tunti|tuntia)[^\n]*)/i);
+  return fallback ? fallback[1].trim() : "";
+}
+
+function parseRecipeFromText(rawText, sourceUrl) {
+  const recipe = emptyRecipe();
+  const lines = String(rawText || "")
+    .replace(/\u00a0/g, " ")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const buckets = {
+    ingredients: [],
+    instructions: [],
+    notes: [],
+  };
+  let currentSection = "";
+
+  recipe.sourceUrl = sourceUrl.trim();
+
+  for (const line of lines) {
+    const section = getTextSection(line);
+    if (section) {
+      currentSection = section;
+      continue;
+    }
+
+    if (!recipe.title && !lineStartsWithAmount(line) && !/^https?:\/\//i.test(line)) {
+      recipe.title = line.replace(/[:：]$/, "").trim();
+      continue;
+    }
+
+    if (!recipe.servings) {
+      const servings = extractServingsFromLine(line);
+      if (servings) {
+        recipe.servings = servings;
+        continue;
+      }
+    }
+
+    const lowerLine = line.toLowerCase();
+    if (!recipe.prepTime && /(valmisteluaika|valmistusaika|prep)/i.test(lowerLine)) {
+      recipe.prepTime = extractTimeValue(line);
+      continue;
+    }
+
+    if (!recipe.cookTime && /(kypsennys|paistoaika|paisto|cook)/i.test(lowerLine)) {
+      recipe.cookTime = extractTimeValue(line);
+      continue;
+    }
+
+    if (currentSection === "ingredients" && /^\d+[.)]\s+/.test(line)) {
+      currentSection = "instructions";
+    } else if (!currentSection && lineStartsWithAmount(line)) {
+      currentSection = "ingredients";
+    } else if (!currentSection && /^\d+[.)]\s+/.test(line)) {
+      currentSection = "instructions";
+    }
+
+    if (currentSection) {
+      buckets[currentSection].push(line);
+    } else if (recipe.title) {
+      buckets.notes.push(line);
+    }
+  }
+
+  recipe.title = recipe.title || "Tuotu resepti";
+  recipe.ingredients = buckets.ingredients.join("\n");
+  recipe.instructions = buckets.instructions.join("\n");
+  recipe.notes = buckets.notes.join("\n");
+
+  return normalizeRecipe(recipe);
+}
+
 export default function App() {
   const [recipes, setRecipes] = useState(loadRecipes);
   const [selectedId, setSelectedId] = useState("");
@@ -285,12 +422,16 @@ export default function App() {
   const [backupDate, setBackupDate] = useState(getBackupDate);
   const [status, setStatus] = useState("");
   const importInputRef = useRef(null);
+  const backupStatus = getBackupStatus(backupDate);
+  const filtersActive = Boolean(searchTerm || categoryFilter || tagFilter || favoritesOnly);
 
   useEffect(() => {
     saveRecipes(recipes);
   }, [recipes]);
 
   useEffect(() => {
+    if (mode !== "view") return;
+
     if (!selectedId && recipes.length > 0) {
       setSelectedId(recipes[0].id);
     }
@@ -298,7 +439,7 @@ export default function App() {
     if (selectedId && !recipes.some((recipe) => recipe.id === selectedId)) {
       setSelectedId(recipes[0]?.id || "");
     }
-  }, [recipes, selectedId]);
+  }, [recipes, selectedId, mode]);
 
   const selectedRecipe = recipes.find((recipe) => recipe.id === selectedId);
 
@@ -357,6 +498,12 @@ export default function App() {
     setStatus("");
   }
 
+  function startTextImport() {
+    setMode("textImport");
+    setSelectedId("");
+    setStatus("");
+  }
+
   function startEditRecipe(recipe) {
     setDraft({ ...recipe, tags: [...recipe.tags] });
     setMode("form");
@@ -367,6 +514,20 @@ export default function App() {
   function cancelForm() {
     setMode("view");
     setDraft(emptyRecipe());
+  }
+
+  function clearFilters() {
+    setSearchTerm("");
+    setCategoryFilter("");
+    setTagFilter("");
+    setFavoritesOnly(false);
+  }
+
+  function useImportedTextRecipe(importedRecipe) {
+    setDraft(importedRecipe);
+    setSelectedId("");
+    setMode("form");
+    setStatus("Tarkista tuotu resepti ja tallenna se.");
   }
 
   function saveDraft(event) {
@@ -448,6 +609,15 @@ export default function App() {
     if (!file) return;
 
     try {
+      if (recipes.length >= IMPORT_WARNING_RECIPE_COUNT) {
+        const continueImport = window.confirm(
+          `Sovelluksessa on jo ${recipes.length} reseptiä. ` +
+            "Ota varmuuskopio ennen tuontia. Jatketaanko tuontia?"
+        );
+
+        if (!continueImport) return;
+      }
+
       const text = await file.text();
       const parsed = JSON.parse(text);
       const importedRecipes = parseImportedRecipes(parsed);
@@ -517,13 +687,17 @@ export default function App() {
         <span className="version">Versio {APP_VERSION}</span>
       </header>
 
-      <section className="backup-bar" aria-label="Varmuuskopiot">
+      <section
+        className={`backup-bar ${backupStatus.stale ? "backup-bar-warning" : ""}`}
+        aria-label="Varmuuskopiot"
+      >
         <div>
           <strong>Muista ottaa varmuuskopio säännöllisesti.</strong>
           <p>
             Viimeisin varmuuskopio:{" "}
             {backupDate ? formatDateTime(backupDate) : "ei vielä merkitty"}
           </p>
+          {backupStatus.message && <p className="backup-warning-text">{backupStatus.message}</p>}
         </div>
         <div className="backup-actions">
           <button
@@ -561,9 +735,14 @@ export default function App() {
               <h2>Reseptit</h2>
               <p>{recipes.length} tallennettua</p>
             </div>
-            <button className="primary-button" type="button" onClick={startNewRecipe}>
-              Uusi resepti
-            </button>
+            <div className="list-actions">
+              <button className="secondary-button" type="button" onClick={startTextImport}>
+                Tuo tekstistä
+              </button>
+              <button className="primary-button" type="button" onClick={startNewRecipe}>
+                Uusi resepti
+              </button>
+            </div>
           </div>
 
           <div className="filters">
@@ -609,6 +788,14 @@ export default function App() {
               />
               Vain suosikit
             </label>
+            <button
+              className="secondary-button filter-clear-button"
+              type="button"
+              onClick={clearFilters}
+              disabled={!filtersActive}
+            >
+              Tyhjennä haku
+            </button>
           </div>
 
           <div className="recipe-list">
@@ -653,6 +840,8 @@ export default function App() {
               onCancel={cancelForm}
               setStatus={setStatus}
             />
+          ) : mode === "textImport" ? (
+            <RecipeTextImport onImport={useImportedTextRecipe} onCancel={cancelForm} />
           ) : selectedRecipe ? (
             <RecipeView
               recipe={selectedRecipe}
@@ -671,6 +860,68 @@ export default function App() {
         </section>
       </main>
     </div>
+  );
+}
+
+function RecipeTextImport({ onImport, onCancel }) {
+  const [rawText, setRawText] = useState("");
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [error, setError] = useState("");
+
+  function handleImport(event) {
+    event.preventDefault();
+
+    if (rawText.trim().length < 20) {
+      setError("Liitä ensin reseptin teksti.");
+      return;
+    }
+
+    const importedRecipe = parseRecipeFromText(rawText, sourceUrl);
+    onImport(importedRecipe);
+  }
+
+  return (
+    <form className="text-import-form" onSubmit={handleImport}>
+      <div className="form-title-row">
+        <div>
+          <p className="eyebrow">Tuonti</p>
+          <h2>Tuo resepti tekstistä</h2>
+        </div>
+        <div className="form-actions">
+          <button className="secondary-button" type="button" onClick={onCancel}>
+            Peruuta
+          </button>
+          <button className="primary-button" type="submit">
+            Jäsennä resepti
+          </button>
+        </div>
+      </div>
+
+      <label>
+        Reseptin teksti
+        <textarea
+          rows="18"
+          value={rawText}
+          onChange={(event) => {
+            setRawText(event.target.value);
+            setError("");
+          }}
+          placeholder={"Liitä tähän reseptin nimi, raaka-aineet ja ohjeet."}
+        />
+      </label>
+
+      <label>
+        Lähdelinkki
+        <input
+          type="url"
+          value={sourceUrl}
+          onChange={(event) => setSourceUrl(event.target.value)}
+          placeholder="https://..."
+        />
+      </label>
+
+      {error && <p className="status-message">{error}</p>}
+    </form>
   );
 }
 
@@ -1117,6 +1368,7 @@ function RecipeForm({ draft, setDraft, isEditing, categories, onSave, onCancel, 
       >
         <div>
           <h3>Kuva</h3>
+          <p>Kopioi kuva ja paina Liitä kuva, tai valitse kuva tiedostona.</p>
         </div>
         <div className="image-actions">
           <label className="file-button">
