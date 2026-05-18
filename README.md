@@ -81,6 +81,18 @@ iPhonessa avaa osoite Safarilla, paina jakopainiketta ja valitse `Lisaa Koti-val
 
 Tarkeaa: localhostissa tallennetut reseptit eivat automaattisesti siirry GitHub Pages -osoitteeseen. Vie ensin varmuuskopio localhost-versiosta ja tuo se sitten GitHub Pages -versiossa.
 
+## Tekstin boldaus ja annosten muokkaus
+
+Reseptin raaka-aineissa, ohjeissa ja muistiinpanoissa voi lihavoida tekstiä kirjoittamalla tekstin kahden tähtiparin väliin:
+
+```text
+**Juustokastike**
+```
+
+Reseptin katselunäkymässä raaka-aineiden kohdalla voi vaihtaa annosmäärää. Tämä skaalaa selvästi rivin alussa olevia määriä, esimerkiksi `400 g`, `1 dl`, `1-2 rkl` ja `½ tl`.
+
+Skaalaus ei muuta alkuperäistä tallennettua reseptiä. Se on tarkoitettu ruoanlaiton avuksi katselunäkymässä.
+
 ## Build
 
 Tee tuotantoversio:

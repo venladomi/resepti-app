@@ -263,20 +263,20 @@ select:focus {
 
 .recipe-list {
   display: grid;
-  gap: 10px;
-  max-height: calc(100vh - 390px);
+  gap: 6px;
+  max-height: calc(100vh - 360px);
   overflow: auto;
   padding-right: 4px;
 }
 
 .recipe-card {
-  display: grid;
+  display: block;
   width: 100%;
-  gap: 7px;
   border: 1px solid #d8e0dc;
-  border-radius: 8px;
+  border-radius: 6px;
   background: #ffffff;
-  padding: 13px;
+  min-height: 44px;
+  padding: 10px 12px;
   color: inherit;
   text-align: left;
 }
@@ -287,7 +287,10 @@ select:focus {
 }
 
 .recipe-card-title {
+  display: block;
   font-weight: 900;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .recipe-card-meta {
@@ -390,6 +393,30 @@ select:focus {
   border-top: 1px solid #dfe7e3;
 }
 
+.section-title-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.section-title-row h3 {
+  margin-bottom: 0;
+}
+
+.serving-adjuster {
+  width: 140px;
+  gap: 5px;
+  color: #40504c;
+  font-size: 0.86rem;
+}
+
+.serving-adjuster input {
+  min-height: 40px;
+  padding: 8px 10px;
+}
+
 .formatted-text {
   line-height: 1.65;
 }
@@ -419,6 +446,10 @@ select:focus {
 .formatted-text li::marker {
   color: #40504c;
   font-variant-numeric: tabular-nums;
+}
+
+.formatted-text strong {
+  font-weight: 900;
 }
 
 .preline {
@@ -502,6 +533,24 @@ select:focus {
 
   .recipe-list {
     max-height: none;
+  }
+
+  .recipe-card {
+    min-height: 52px;
+    padding: 13px 14px;
+  }
+
+  .recipe-card-title {
+    font-size: 1rem;
+  }
+
+  .section-title-row {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .serving-adjuster {
+    width: 100%;
   }
 
   .detail-panel {

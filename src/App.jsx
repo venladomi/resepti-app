@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const APP_VERSION = "1.0";
+const APP_VERSION = "1.1";
 const STORAGE_KEY = "reseptiapp.recipes.v1";
 const BACKUP_KEY = "reseptiapp.latestBackupAt.v1";
 
@@ -95,6 +95,100 @@ function splitTags(value) {
 
 function getBackupDate() {
   return window.localStorage.getItem(BACKUP_KEY) || "";
+}
+
+function parsePositiveNumber(value) {
+  const normalized = String(value || "")
+    .replace(",", ".")
+    .match(/\d+(?:\.\d+)?/);
+
+  if (!normalized) return null;
+
+  const number = Number(normalized[0]);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function parseServings(value) {
+  return parsePositiveNumber(value);
+}
+
+function formatNumber(value) {
+  if (!Number.isFinite(value)) return "";
+
+  const rounded = Math.round(value * 4) / 4;
+  const whole = Math.trunc(rounded);
+  const fraction = Math.round((rounded - whole) * 4);
+  const fractionMap = ["", "¼", "½", "¾"];
+
+  if (fraction === 0) return String(whole);
+  if (whole === 0) return fractionMap[fraction];
+  return `${whole} ${fractionMap[fraction]}`;
+}
+
+function parseAmount(value) {
+  const text = String(value || "").trim();
+  const fractionValues = {
+    "¼": 0.25,
+    "½": 0.5,
+    "¾": 0.75,
+    "⅓": 1 / 3,
+    "⅔": 2 / 3,
+    "⅛": 0.125,
+    "⅜": 0.375,
+    "⅝": 0.625,
+    "⅞": 0.875,
+  };
+
+  if (fractionValues[text]) return fractionValues[text];
+
+  const mixed = text.match(/^(\d+(?:[,.]\d+)?)\s+([¼½¾⅓⅔⅛⅜⅝⅞])$/);
+  if (mixed) {
+    return Number(mixed[1].replace(",", ".")) + fractionValues[mixed[2]];
+  }
+
+  const slashFraction = text.match(/^(\d+)\/(\d+)$/);
+  if (slashFraction) {
+    return Number(slashFraction[1]) / Number(slashFraction[2]);
+  }
+
+  const decimal = Number(text.replace(",", "."));
+  return Number.isFinite(decimal) ? decimal : null;
+}
+
+function scaleAmountText(value, factor) {
+  const range = String(value).match(/^(.+?)\s*[-–]\s*(.+)$/);
+  if (range) {
+    const first = parseAmount(range[1]);
+    const second = parseAmount(range[2]);
+
+    if (first !== null && second !== null) {
+      return `${formatNumber(first * factor)}-${formatNumber(second * factor)}`;
+    }
+  }
+
+  const amount = parseAmount(value);
+  return amount === null ? value : formatNumber(amount * factor);
+}
+
+function scaleIngredientLine(line, factor) {
+  const match = line.match(
+    /^(\s*(?:[•◆◇♦◦▪▫*]\s*)?)(\d+(?:[,.]\d+)?\s+[¼½¾⅓⅔⅛⅜⅝⅞]|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞]|\d+(?:[,.]\d+)?(?:\s*[-–]\s*(?:\d+(?:[,.]\d+)?\s+[¼½¾⅓⅔⅛⅜⅝⅞]|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞]|\d+(?:[,.]\d+)?))?)(.*)$/
+  );
+
+  if (!match) return line;
+
+  return `${match[1]}${scaleAmountText(match[2], factor)}${match[3]}`;
+}
+
+function scaleIngredientText(value, factor) {
+  if (!Number.isFinite(factor) || factor <= 0 || Math.abs(factor - 1) < 0.001) {
+    return value;
+  }
+
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line) => scaleIngredientLine(line, factor))
+    .join("\n");
 }
 
 async function resizeRecipeImage(file) {
@@ -488,23 +582,7 @@ export default function App() {
                   setMode("view");
                 }}
               >
-                <span className="recipe-card-title">
-                  {recipe.favorite ? "★ " : ""}
-                  {recipe.title}
-                </span>
-                <span className="recipe-card-meta">
-                  {recipe.category || "Ei kategoriaa"}
-                  {recipe.servings ? ` · ${recipe.servings}` : ""}
-                </span>
-                {recipe.tags.length > 0 && (
-                  <span className="tag-row">
-                    {recipe.tags.slice(0, 3).map((tag) => (
-                      <span className="tag" key={tag}>
-                        {tag}
-                      </span>
-                    ))}
-                  </span>
-                )}
+                <span className="recipe-card-title">{recipe.title}</span>
               </button>
             ))}
           </div>
@@ -543,6 +621,16 @@ export default function App() {
 }
 
 function RecipeView({ recipe, onEdit, onDelete, onFavorite }) {
+  const baseServings = parseServings(recipe.servings);
+  const [targetServings, setTargetServings] = useState(baseServings ? String(baseServings) : "");
+  const targetServingsNumber = parsePositiveNumber(targetServings);
+  const scalingFactor = baseServings && targetServingsNumber ? targetServingsNumber / baseServings : 1;
+  const scaledIngredients = scaleIngredientText(recipe.ingredients, scalingFactor);
+
+  useEffect(() => {
+    setTargetServings(baseServings ? String(baseServings) : "");
+  }, [recipe.id, recipe.servings, baseServings]);
+
   return (
     <article className="recipe-view">
       <div className="recipe-actions no-print">
@@ -587,8 +675,22 @@ function RecipeView({ recipe, onEdit, onDelete, onFavorite }) {
       )}
 
       <section className="recipe-section">
-        <h3>Raaka-aineet</h3>
-        <RecipeText value={recipe.ingredients || "Ei raaka-aineita."} />
+        <div className="section-title-row">
+          <h3>Raaka-aineet</h3>
+          {baseServings && (
+            <label className="serving-adjuster no-print">
+              Annokset nyt
+              <input
+                type="number"
+                min="0.25"
+                step="0.25"
+                value={targetServings}
+                onChange={(event) => setTargetServings(event.target.value)}
+              />
+            </label>
+          )}
+        </div>
+        <RecipeText value={scaledIngredients || "Ei raaka-aineita."} />
       </section>
 
       <section className="recipe-section">
@@ -637,7 +739,7 @@ function RecipeText({ value }) {
             <ol key={blockIndex} start={block.start}>
               {block.items.map((item, itemIndex) => (
                 <li key={itemIndex}>
-                  <span className="preline">{item}</span>
+                  <RichText value={item} />
                 </li>
               ))}
             </ol>
@@ -649,7 +751,7 @@ function RecipeText({ value }) {
             <ul key={blockIndex}>
               {block.items.map((item, itemIndex) => (
                 <li key={itemIndex}>
-                  <span className="preline">{item}</span>
+                  <RichText value={item} />
                 </li>
               ))}
             </ul>
@@ -657,13 +759,46 @@ function RecipeText({ value }) {
         }
 
         return (
-          <p className="preline" key={blockIndex}>
-            {block.text}
+          <p key={blockIndex}>
+            <RichText value={block.text} />
           </p>
         );
       })}
     </div>
   );
+}
+
+function RichText({ value }) {
+  return (
+    <span className="preline">
+      {parseBoldText(value).map((part, index) =>
+        part.bold ? <strong key={index}>{part.text}</strong> : <span key={index}>{part.text}</span>
+      )}
+    </span>
+  );
+}
+
+function parseBoldText(value) {
+  const parts = [];
+  const text = String(value || "");
+  const matcher = /\*\*(.+?)\*\*/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = matcher.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push({ text: text.slice(lastIndex, match.index), bold: false });
+    }
+
+    parts.push({ text: match[1], bold: true });
+    lastIndex = matcher.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push({ text: text.slice(lastIndex), bold: false });
+  }
+
+  return parts.length > 0 ? parts : [{ text, bold: false }];
 }
 
 function createTextBlocks(value) {
