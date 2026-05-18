@@ -1,4 +1,4 @@
-const CACHE_NAME = "reseptiapp-v1";
+const CACHE_NAME = "reseptiapp-v1.1";
 const BASE_PATH = new URL(self.registration.scope).pathname;
 const APP_SHELL = [
   BASE_PATH,
@@ -34,6 +34,19 @@ self.addEventListener("fetch", (event) => {
 
   const requestUrl = new URL(event.request.url);
   if (requestUrl.origin !== self.location.origin) return;
+
+  if (event.request.mode === "navigate") {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          const responseCopy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(`${BASE_PATH}index.html`, responseCopy));
+          return response;
+        })
+        .catch(() => caches.match(`${BASE_PATH}index.html`).then((cached) => cached || caches.match(BASE_PATH)))
+    );
+    return;
+  }
 
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
