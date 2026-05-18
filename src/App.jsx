@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const APP_VERSION = "1.2";
+const APP_VERSION = "1.3";
 const STORAGE_KEY = "reseptiapp.recipes.v1";
 const BACKUP_KEY = "reseptiapp.latestBackupAt.v1";
 
@@ -112,6 +112,15 @@ function parseServings(value) {
   return parsePositiveNumber(value);
 }
 
+const FRACTION_CHARACTERS = "¼½¾⅓⅔⅛⅜⅝⅞";
+const AMOUNT_PATTERN = [
+  "\\d+(?:[,.]\\d+)?\\s+\\d+\\/\\d+",
+  `\\d+(?:[,.]\\d+)?\\s+[${FRACTION_CHARACTERS}]`,
+  "\\d+\\/\\d+",
+  `[${FRACTION_CHARACTERS}]`,
+  `\\d+(?:[,.]\\d+)?(?:\\s*[-–]\\s*(?:\\d+(?:[,.]\\d+)?\\s+\\d+\\/\\d+|\\d+(?:[,.]\\d+)?\\s+[${FRACTION_CHARACTERS}]|\\d+\\/\\d+|[${FRACTION_CHARACTERS}]|\\d+(?:[,.]\\d+)?))?`,
+].join("|");
+
 function formatNumber(value) {
   if (!Number.isFinite(value)) return "";
 
@@ -161,7 +170,7 @@ function parseAmount(value) {
 }
 
 function scaleAmountText(value, factor) {
-  const range = String(value).match(/^(.+?)\s*[-–]\s*(.+)$/);
+  const range = String(value).match(/^(.+?)\s*[-–]\s*(.+)$/u);
   if (range) {
     const first = parseAmount(range[1]);
     const second = parseAmount(range[2]);
@@ -176,14 +185,14 @@ function scaleAmountText(value, factor) {
 }
 
 function scaleIngredientLine(line, factor) {
-  const match = line.match(/^(\s*(?:(?:[•◆◇♦◦▪▫*]|-)\s+)?)(.*)$/);
+  const match = String(line).match(
+    new RegExp(`^(\\s*(?:[^\\p{L}\\p{N}${FRACTION_CHARACTERS}]+\\s*)?)(.*)$`, "u")
+  );
   if (!match) return line;
 
   const prefix = match[1];
   const rest = match[2];
-  const amountMatch = rest.match(
-    /^(\d+(?:[,.]\d+)?\s+\d+\/\d+|\d+(?:[,.]\d+)?\s+[¼½¾⅓⅔⅛⅜⅝⅞]|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞]|\d+(?:[,.]\d+)?(?:\s*[-–]\s*(?:\d+(?:[,.]\d+)?\s+\d+\/\d+|\d+(?:[,.]\d+)?\s+[¼½¾⅓⅔⅛⅜⅝⅞]|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞]|\d+(?:[,.]\d+)?))?)(.*)$/
-  );
+  const amountMatch = rest.match(new RegExp(`^(${AMOUNT_PATTERN})(.*)$`, "u"));
 
   if (!amountMatch) return line;
 
