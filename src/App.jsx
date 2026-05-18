@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const APP_VERSION = "1.1";
+const APP_VERSION = "1.2";
 const STORAGE_KEY = "reseptiapp.recipes.v1";
 const BACKUP_KEY = "reseptiapp.latestBackupAt.v1";
 
@@ -146,6 +146,11 @@ function parseAmount(value) {
     return Number(mixed[1].replace(",", ".")) + fractionValues[mixed[2]];
   }
 
+  const mixedSlash = text.match(/^(\d+(?:[,.]\d+)?)\s+(\d+)\/(\d+)$/);
+  if (mixedSlash) {
+    return Number(mixedSlash[1].replace(",", ".")) + Number(mixedSlash[2]) / Number(mixedSlash[3]);
+  }
+
   const slashFraction = text.match(/^(\d+)\/(\d+)$/);
   if (slashFraction) {
     return Number(slashFraction[1]) / Number(slashFraction[2]);
@@ -171,13 +176,18 @@ function scaleAmountText(value, factor) {
 }
 
 function scaleIngredientLine(line, factor) {
-  const match = line.match(
-    /^(\s*(?:[•◆◇♦◦▪▫*]\s*)?)(\d+(?:[,.]\d+)?\s+[¼½¾⅓⅔⅛⅜⅝⅞]|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞]|\d+(?:[,.]\d+)?(?:\s*[-–]\s*(?:\d+(?:[,.]\d+)?\s+[¼½¾⅓⅔⅛⅜⅝⅞]|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞]|\d+(?:[,.]\d+)?))?)(.*)$/
-  );
-
+  const match = line.match(/^(\s*(?:(?:[•◆◇♦◦▪▫*]|-)\s+)?)(.*)$/);
   if (!match) return line;
 
-  return `${match[1]}${scaleAmountText(match[2], factor)}${match[3]}`;
+  const prefix = match[1];
+  const rest = match[2];
+  const amountMatch = rest.match(
+    /^(\d+(?:[,.]\d+)?\s+\d+\/\d+|\d+(?:[,.]\d+)?\s+[¼½¾⅓⅔⅛⅜⅝⅞]|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞]|\d+(?:[,.]\d+)?(?:\s*[-–]\s*(?:\d+(?:[,.]\d+)?\s+\d+\/\d+|\d+(?:[,.]\d+)?\s+[¼½¾⅓⅔⅛⅜⅝⅞]|\d+\/\d+|[¼½¾⅓⅔⅛⅜⅝⅞]|\d+(?:[,.]\d+)?))?)(.*)$/
+  );
+
+  if (!amountMatch) return line;
+
+  return `${prefix}${scaleAmountText(amountMatch[1], factor)}${amountMatch[2]}`;
 }
 
 function scaleIngredientText(value, factor) {
