@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const APP_VERSION = "1.6";
+const APP_VERSION = "1.7";
 const STORAGE_KEY = "reseptiapp.recipes.v1";
 const BACKUP_KEY = "reseptiapp.latestBackupAt.v1";
 const BACKUP_STALE_DAYS = 14;
@@ -249,8 +249,65 @@ function scaleIngredientText(value, factor) {
     .join("\n");
 }
 
-const INSTRUCTION_UNIT_PATTERN =
-  "kg|mg|g|l|dl|cl|ml|rkl|tl|kpl|pkt|prk|pss|pussia?|purkkia?|kuutiota?";
+const INSTRUCTION_UNIT_PATTERN = [
+  "kg",
+  "mg",
+  "g",
+  "l",
+  "dl",
+  "cl",
+  "ml",
+  "rkl",
+  "tl",
+  "kpl",
+  "pkt",
+  "prk",
+  "pss",
+  "kilogrammaa?",
+  "kilogramman",
+  "milligrammaa?",
+  "milligramman",
+  "grammaa?",
+  "gramman",
+  "desilitraa?",
+  "desilitran",
+  "senttilitraa?",
+  "senttilitran",
+  "millilitraa?",
+  "millilitran",
+  "litraa?",
+  "litran",
+  "ruokalusikallista",
+  "ruokalusikallinen",
+  "ruokalusikkaa?",
+  "teelusikallista",
+  "teelusikallinen",
+  "teelusikkaa?",
+  "kappaletta",
+  "kappaleen",
+  "pussia?",
+  "purkkia?",
+  "kuutiota?",
+].join("|");
+
+const INSTRUCTION_WORD_AMOUNTS = {
+  puoli: 0.5,
+  puolikas: 0.5,
+  yksi: 1,
+  yhden: 1,
+  pari: 2,
+  kaksi: 2,
+  kolme: 3,
+  neljä: 4,
+  viisi: 5,
+  kuusi: 6,
+  seitsemän: 7,
+  kahdeksan: 8,
+  yhdeksän: 9,
+  kymmenen: 10,
+};
+
+const INSTRUCTION_WORD_AMOUNT_PATTERN = Object.keys(INSTRUCTION_WORD_AMOUNTS).join("|");
 
 function scaleInstructionText(value, factor) {
   if (!Number.isFinite(factor) || factor <= 0 || Math.abs(factor - 1) < 0.001) {
@@ -261,9 +318,21 @@ function scaleInstructionText(value, factor) {
     `(${AMOUNT_PATTERN})(\\s*(?:${INSTRUCTION_UNIT_PATTERN})(?=[\\s.,;:!?)\\]]|$))`,
     "giu"
   );
+  const wordAmountWithUnit = new RegExp(
+    `(^|[^\\p{L}])(${INSTRUCTION_WORD_AMOUNT_PATTERN})(\\s*(?:${INSTRUCTION_UNIT_PATTERN})(?=[\\s.,;:!?)\\]]|$))`,
+    "giu"
+  );
 
-  return String(value || "").replace(amountWithUnit, (match, amount, unit) => {
-    return `${scaleAmountText(amount, factor)}${unit}`;
+  const scaledNumericAmounts = String(value || "").replace(
+    amountWithUnit,
+    (match, amount, unit) => {
+      return `${scaleAmountText(amount, factor)}${unit}`;
+    }
+  );
+
+  return scaledNumericAmounts.replace(wordAmountWithUnit, (match, prefix, amount, unit) => {
+    const scaledAmount = INSTRUCTION_WORD_AMOUNTS[amount.toLocaleLowerCase("fi")] * factor;
+    return `${prefix}${formatNumber(scaledAmount)}${unit}`;
   });
 }
 
