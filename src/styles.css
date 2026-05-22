@@ -110,6 +110,12 @@ h3 {
   color: #66736f;
 }
 
+.image-storage-stats {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 18px;
+}
+
 .backup-bar-warning {
   border-color: #d7b45b;
   background: #fffaf0;

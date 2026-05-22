@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const APP_VERSION = "1.9";
+const APP_VERSION = "1.10";
 const STORAGE_KEY = "reseptiapp.recipes.v1";
 const BACKUP_KEY = "reseptiapp.latestBackupAt.v1";
 const BACKUP_STALE_DAYS = 14;
@@ -237,6 +237,44 @@ async function addImageDataToBackup(recipes) {
   );
 
   return { recipes: backupRecipes, missing };
+}
+
+async function getRecipeImageStats(recipes) {
+  let count = 0;
+  let bytes = 0;
+  let missing = 0;
+
+  for (const recipe of recipes) {
+    if (isDataImage(recipe.image)) {
+      count += 1;
+      bytes += (await dataUrlToBlob(recipe.image)).size;
+      continue;
+    }
+
+    if (!isLocalImageRef(recipe.image)) continue;
+
+    const imageBlob = await getImageBlob(recipe.image);
+    if (!imageBlob) {
+      missing += 1;
+      continue;
+    }
+
+    count += 1;
+    bytes += imageBlob.size;
+  }
+
+  return { count, bytes, missing };
+}
+
+function formatImageSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 MB";
+
+  const megabytes = bytes / (1024 * 1024);
+  if (megabytes < 0.1) return "alle 0,1 MB";
+
+  return `${new Intl.NumberFormat("fi-FI", {
+    maximumFractionDigits: megabytes < 10 ? 1 : 0,
+  }).format(megabytes)} MB`;
 }
 
 function formatDateTime(value) {
@@ -787,6 +825,12 @@ export default function App() {
   const [tagFilter, setTagFilter] = useState("");
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [backupDate, setBackupDate] = useState(getBackupDate);
+  const [imageStats, setImageStats] = useState({
+    count: 0,
+    bytes: 0,
+    missing: 0,
+    ready: false,
+  });
   const [status, setStatus] = useState("");
   const importInputRef = useRef(null);
   const imageMigrationStartedRef = useRef(false);
@@ -828,6 +872,26 @@ export default function App() {
       setSelectedId(recipes[0]?.id || "");
     }
   }, [recipes, selectedId, mode]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function updateImageStats() {
+      try {
+        const stats = await getRecipeImageStats(recipes);
+        if (active) setImageStats({ ...stats, ready: true });
+      } catch (error) {
+        console.error("Kuvien määrän laskeminen epäonnistui", error);
+        if (active) setImageStats((current) => ({ ...current, ready: false }));
+      }
+    }
+
+    updateImageStats();
+
+    return () => {
+      active = false;
+    };
+  }, [recipes]);
 
   const selectedRecipe = recipes.find((recipe) => recipe.id === selectedId);
 
@@ -1129,6 +1193,18 @@ export default function App() {
             Viimeisin varmuuskopio:{" "}
             {backupDate ? formatDateTime(backupDate) : "ei vielä merkitty"}
           </p>
+          <div className="image-storage-stats" aria-label="Reseptikuvien koko">
+            <p>Kuvia tallessa: {imageStats.ready ? imageStats.count : "lasketaan..."}</p>
+            <p>
+              Kuvien koko noin:{" "}
+              {imageStats.ready ? formatImageSize(imageStats.bytes) : "lasketaan..."}
+            </p>
+          </div>
+          {imageStats.ready && imageStats.missing > 0 && (
+            <p className="backup-warning-text">
+              {imageStats.missing} reseptikuvaa ei löytynyt selaimen kuvavarastosta.
+            </p>
+          )}
           {backupStatus.message && <p className="backup-warning-text">{backupStatus.message}</p>}
         </div>
         <div className="backup-actions">

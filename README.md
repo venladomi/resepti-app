@@ -107,6 +107,8 @@ Sovellus pienentää ja pakkaa kuvan ennen tallennusta. Kuva tallennetaan selaim
 
 Kuvat vievät selaimen tallennustilaa tekstiä enemmän. Sovellus pitää reseptitekstit ja kuvat erillään, jotta kuvat eivät täytä reseptilistan pientä tallennustilaa.
 
+Varmuuskopiorivillä näkyy myös resepteihin liitettyjen kuvien määrä ja niiden yhteiskoko likimäärin.
+
 ## Reseptilista
 
 Reseptilista on ryhmitelty kategorioiden mukaan. Kategoriat ja reseptien nimet järjestetään aakkosittain.

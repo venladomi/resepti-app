@@ -1,4 +1,4 @@
-const CACHE_NAME = "reseptiapp-v1.9";
+const CACHE_NAME = "reseptiapp-v1.10";
 const BASE_PATH = new URL(self.registration.scope).pathname;
 const APP_SHELL = [
   BASE_PATH,
