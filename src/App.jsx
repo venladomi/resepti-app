@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const APP_VERSION = "1.8";
+const APP_VERSION = "1.9";
 const STORAGE_KEY = "reseptiapp.recipes.v1";
 const BACKUP_KEY = "reseptiapp.latestBackupAt.v1";
 const BACKUP_STALE_DAYS = 14;
 const IMPORT_WARNING_RECIPE_COUNT = 10;
 const MAX_RECIPE_IMAGE_WIDTH = 1200;
-// Kuvat tallennetaan reseptin mukana localStorageen, jonka tila on rajallinen.
-// Tavoite pitää uudet kuvat riittävän pieninä, jotta yksi kuva ei täytä tallennustilaa.
-const RECIPE_IMAGE_TARGET_LENGTH = 220000;
+const RECIPE_IMAGE_TARGET_BYTES = 220000;
+const IMAGE_DATABASE_NAME = "reseptiapp.images.v1";
+const IMAGE_DATABASE_VERSION = 1;
+const IMAGE_STORE_NAME = "recipeImages";
+const IMAGE_REF_PREFIX = "local-image:";
 
 const emptyRecipe = () => {
   const now = new Date().toISOString();
@@ -80,7 +82,8 @@ function loadRecipes() {
 }
 
 function saveRecipes(recipes) {
-  // Tämä on ainoa paikka, jossa reseptilista kirjoitetaan selaimen localStorageen.
+  // Reseptien tekstidata tallennetaan localStorageen. Kuvat tallennetaan erikseen
+  // IndexedDB-kuvavarastoon, jotta kuvat eivät täytä reseptilistan rajallista tilaa.
   // Kun Supabase lisätään myöhemmin, tämän rajapinnan voi korvata ilman että reseptin rakenne muuttuu.
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(recipes));
@@ -109,6 +112,131 @@ function getRecipeSaveErrorMessage(error) {
   }
 
   return "Tallennus ei onnistunut. Resepti jäi lomakkeeseen, joten voit yrittää uudelleen.";
+}
+
+function isDataImage(value) {
+  return String(value || "").startsWith("data:image/");
+}
+
+function isLocalImageRef(value) {
+  return String(value || "").startsWith(IMAGE_REF_PREFIX);
+}
+
+let imageDatabasePromise;
+
+function openImageDatabase() {
+  if (!window.indexedDB) {
+    return Promise.reject(new Error("Selaimen kuvavarasto ei ole käytettävissä."));
+  }
+
+  if (!imageDatabasePromise) {
+    imageDatabasePromise = new Promise((resolve, reject) => {
+      // Reseptikuvat tallennetaan selaimen IndexedDB-kuvavarastoon Blob-muodossa.
+      // Reseptin `image`-kenttään jää vain merkkijonoviite kuvaan.
+      const request = window.indexedDB.open(IMAGE_DATABASE_NAME, IMAGE_DATABASE_VERSION);
+      request.onupgradeneeded = () => {
+        const database = request.result;
+        if (!database.objectStoreNames.contains(IMAGE_STORE_NAME)) {
+          database.createObjectStore(IMAGE_STORE_NAME, { keyPath: "id" });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  return imageDatabasePromise;
+}
+
+function waitForImageTransaction(transaction) {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  });
+}
+
+function getImageRefId(imageRef) {
+  return String(imageRef || "").slice(IMAGE_REF_PREFIX.length);
+}
+
+async function saveImageBlob(blob) {
+  const database = await openImageDatabase();
+  const id = createId();
+  const transaction = database.transaction(IMAGE_STORE_NAME, "readwrite");
+  const finished = waitForImageTransaction(transaction);
+  transaction.objectStore(IMAGE_STORE_NAME).put({
+    id,
+    blob,
+    createdAt: new Date().toISOString(),
+  });
+  await finished;
+  return `${IMAGE_REF_PREFIX}${id}`;
+}
+
+async function getImageBlob(imageRef) {
+  if (!isLocalImageRef(imageRef)) return null;
+
+  const database = await openImageDatabase();
+  const transaction = database.transaction(IMAGE_STORE_NAME, "readonly");
+  const finished = waitForImageTransaction(transaction);
+  const request = transaction.objectStore(IMAGE_STORE_NAME).get(getImageRefId(imageRef));
+  const record = await new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  await finished;
+  return record?.blob || null;
+}
+
+async function dataUrlToBlob(dataUrl) {
+  const response = await fetch(dataUrl);
+  return response.blob();
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function moveDataUrlImagesToImageStore(recipes) {
+  let moved = 0;
+
+  const nextRecipes = await Promise.all(
+    recipes.map(async (recipe) => {
+      if (!isDataImage(recipe.image)) return recipe;
+
+      const imageRef = await saveImageBlob(await dataUrlToBlob(recipe.image));
+      moved += 1;
+      return { ...recipe, image: imageRef };
+    })
+  );
+
+  return { recipes: nextRecipes, moved };
+}
+
+async function addImageDataToBackup(recipes) {
+  let missing = 0;
+
+  const backupRecipes = await Promise.all(
+    recipes.map(async (recipe) => {
+      if (!isLocalImageRef(recipe.image)) return recipe;
+
+      const imageBlob = await getImageBlob(recipe.image);
+      if (!imageBlob) {
+        missing += 1;
+        return { ...recipe, image: "" };
+      }
+
+      return { ...recipe, image: await blobToDataUrl(imageBlob) };
+    })
+  );
+
+  return { recipes: backupRecipes, missing };
 }
 
 function formatDateTime(value) {
@@ -380,20 +508,20 @@ async function resizeRecipeImage(file) {
     ];
     const availableWidths = [...new Set(widths.map((width) => Math.min(width, image.width)))];
     const qualities = [0.8, 0.68, 0.56, 0.44];
-    let smallestImage = "";
+    let smallestImage = null;
 
     for (const width of availableWidths) {
       const canvas = drawImageToCanvas(image, width);
 
       for (const quality of qualities) {
-        const dataUrl = getCompressedCanvasDataUrl(canvas, quality);
+        const imageBlob = await getCompressedCanvasBlob(canvas, quality);
 
-        if (!smallestImage || dataUrl.length < smallestImage.length) {
-          smallestImage = dataUrl;
+        if (!smallestImage || imageBlob.size < smallestImage.size) {
+          smallestImage = imageBlob;
         }
 
-        if (dataUrl.length <= RECIPE_IMAGE_TARGET_LENGTH) {
-          return dataUrl;
+        if (imageBlob.size <= RECIPE_IMAGE_TARGET_BYTES) {
+          return imageBlob;
         }
       }
     }
@@ -416,13 +544,25 @@ function drawImageToCanvas(image, width) {
   return canvas;
 }
 
-function getCompressedCanvasDataUrl(canvas, quality) {
-  const webp = canvas.toDataURL("image/webp", quality);
-  if (webp.startsWith("data:image/webp")) {
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+      } else {
+        reject(new Error("Kuvan pakkaaminen epäonnistui."));
+      }
+    }, type, quality);
+  });
+}
+
+async function getCompressedCanvasBlob(canvas, quality) {
+  const webp = await canvasToBlob(canvas, "image/webp", quality);
+  if (webp.type === "image/webp") {
     return webp;
   }
 
-  return canvas.toDataURL("image/jpeg", quality);
+  return canvasToBlob(canvas, "image/jpeg", quality);
 }
 
 function loadImage(src) {
@@ -649,8 +789,33 @@ export default function App() {
   const [backupDate, setBackupDate] = useState(getBackupDate);
   const [status, setStatus] = useState("");
   const importInputRef = useRef(null);
+  const imageMigrationStartedRef = useRef(false);
   const backupStatus = getBackupStatus(backupDate);
   const filtersActive = Boolean(searchTerm || categoryFilter || tagFilter || favoritesOnly);
+
+  useEffect(() => {
+    if (imageMigrationStartedRef.current) return;
+    imageMigrationStartedRef.current = true;
+
+    async function migrateStoredImages() {
+      try {
+        const result = await moveDataUrlImagesToImageStore(recipes);
+        if (result.moved > 0) {
+          storeRecipes(
+            result.recipes,
+            `Kuvat siirretty selaimen kuvavarastoon (${result.moved} kpl).`
+          );
+        }
+      } catch (error) {
+        console.error("Kuvien siirto epäonnistui", error);
+        setStatus(
+          "Vanhojen kuvien siirto ei onnistunut. Varmuuskopio on tärkeä ennen uusia kuvamuutoksia."
+        );
+      }
+    }
+
+    migrateStoredImages();
+  }, [recipes]);
 
   useEffect(() => {
     if (mode !== "view") return;
@@ -766,7 +931,18 @@ export default function App() {
     return true;
   }
 
-  function saveDraft(event) {
+  async function storeRecipesWithImages(nextRecipes, successMessage = "") {
+    try {
+      const result = await moveDataUrlImagesToImageStore(nextRecipes);
+      return storeRecipes(result.recipes, successMessage);
+    } catch (error) {
+      console.error("Kuvien tallentaminen epäonnistui", error);
+      setStatus("Kuvien tallentaminen ei onnistunut. Reseptit jäivät ennalleen.");
+      return false;
+    }
+  }
+
+  async function saveDraft(event) {
     event.preventDefault();
 
     const now = new Date().toISOString();
@@ -789,58 +965,69 @@ export default function App() {
       ? recipes.map((recipe) => (recipe.id === cleanDraft.id ? cleanDraft : recipe))
       : [cleanDraft, ...recipes];
 
-    if (!storeRecipes(nextRecipes, "Resepti tallennettu.")) return;
+    if (!(await storeRecipesWithImages(nextRecipes, "Resepti tallennettu."))) return;
 
     setSelectedId(cleanDraft.id);
     setMode("view");
   }
 
-  function deleteRecipe(recipe) {
+  async function deleteRecipe(recipe) {
     const ok = window.confirm(`Poistetaanko resepti "${recipe.title}"?`);
     if (!ok) return;
 
     const nextRecipes = recipes.filter((item) => item.id !== recipe.id);
-    if (!storeRecipes(nextRecipes, "Resepti poistettu.")) return;
+    if (!(await storeRecipesWithImages(nextRecipes, "Resepti poistettu."))) return;
 
     setMode("view");
   }
 
-  function toggleFavorite(recipe) {
+  async function toggleFavorite(recipe) {
     const now = new Date().toISOString();
 
-    storeRecipes(
+    await storeRecipesWithImages(
       recipes.map((item) =>
         item.id === recipe.id ? { ...item, favorite: !item.favorite, updatedAt: now } : item
       )
     );
   }
 
-  function exportBackup() {
-    const exportedAt = new Date().toISOString();
-    const payload = {
-      app: "ReseptiApp",
-      version: APP_VERSION,
-      exportedAt,
-      recipes,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `reseptiapp-varmuuskopio-${exportedAt.slice(0, 10)}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-
+  async function exportBackup() {
     try {
-      window.localStorage.setItem(BACKUP_KEY, exportedAt);
-      setBackupDate(exportedAt);
-    } catch (error) {
-      console.warn("Varmuuskopion päivämäärää ei voitu tallentaa", error);
-    }
+      const exportedAt = new Date().toISOString();
+      setStatus("Varmuuskopiota valmistellaan...");
+      const backupImages = await addImageDataToBackup(recipes);
+      const payload = {
+        app: "ReseptiApp",
+        version: APP_VERSION,
+        exportedAt,
+        recipes: backupImages.recipes,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `reseptiapp-varmuuskopio-${exportedAt.slice(0, 10)}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
 
-    setStatus("Varmuuskopio ladattu JSON-tiedostona.");
+      try {
+        window.localStorage.setItem(BACKUP_KEY, exportedAt);
+        setBackupDate(exportedAt);
+      } catch (error) {
+        console.warn("Varmuuskopion päivämäärää ei voitu tallentaa", error);
+      }
+
+      setStatus(
+        backupImages.missing > 0
+          ? `Varmuuskopio ladattu. ${backupImages.missing} kuvaa ei löytynyt selaimen kuvavarastosta.`
+          : "Varmuuskopio ladattu JSON-tiedostona."
+      );
+    } catch (error) {
+      console.error("Varmuuskopion vienti epäonnistui", error);
+      setStatus("Varmuuskopion vienti ei onnistunut. Yritä uudelleen ennen isoja muutoksia.");
+    }
   }
 
   async function importBackup(event) {
@@ -897,7 +1084,10 @@ export default function App() {
         (a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)
       );
 
-      storeRecipes(nextRecipes, `Tuonti valmis. Lisätty ${added}, korvattu ${replaced}.`);
+      await storeRecipesWithImages(
+        nextRecipes,
+        `Tuonti valmis. Lisätty ${added}, korvattu ${replaced}.`
+      );
     } catch (error) {
       console.error("Varmuuskopion tuonti epäonnistui", error);
       setStatus("Varmuuskopion tuonti epäonnistui. Tarkista JSON-tiedosto.");
@@ -1170,6 +1360,51 @@ function RecipeTextImport({ onImport, onCancel }) {
   );
 }
 
+function useRecipeImageSource(image) {
+  const [source, setSource] = useState(isLocalImageRef(image) ? "" : image);
+
+  useEffect(() => {
+    let objectUrl = "";
+    let active = true;
+
+    if (!image) {
+      setSource("");
+      return undefined;
+    }
+
+    if (!isLocalImageRef(image)) {
+      setSource(image);
+      return undefined;
+    }
+
+    setSource("");
+    getImageBlob(image)
+      .then((blob) => {
+        if (!blob || !active) return;
+
+        objectUrl = URL.createObjectURL(blob);
+        setSource(objectUrl);
+      })
+      .catch((error) => {
+        console.error("Kuvan lukeminen epäonnistui", error);
+        if (active) setSource("");
+      });
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [image]);
+
+  return source;
+}
+
+function RecipeImage({ image, className }) {
+  const source = useRecipeImageSource(image);
+
+  return source ? <img className={className} src={source} alt="" /> : null;
+}
+
 function RecipeView({ recipe, onEdit, onDelete, onFavorite }) {
   const baseServings = parseServings(recipe.servings);
   const [targetServings, setTargetServings] = useState(baseServings ? String(baseServings) : "");
@@ -1199,7 +1434,7 @@ function RecipeView({ recipe, onEdit, onDelete, onFavorite }) {
         </button>
       </div>
 
-      {recipe.image && <img className="recipe-image" src={recipe.image} alt="" />}
+      <RecipeImage className="recipe-image" image={recipe.image} />
 
       <div className="recipe-title-row">
         <div>
@@ -1443,7 +1678,8 @@ function RecipeForm({ draft, setDraft, isEditing, categories, onSave, onCancel, 
           ? blob
           : new File([blob], "liitetty-kuva", { type: blob.type || "image/png" });
       const resizedImage = await resizeRecipeImage(imageFile);
-      updateField("image", resizedImage);
+      const imageRef = await saveImageBlob(resizedImage);
+      updateField("image", imageRef);
       setImageStatus(successMessage);
       setStatus("");
     } catch (error) {
@@ -1640,7 +1876,7 @@ function RecipeForm({ draft, setDraft, isEditing, categories, onSave, onCancel, 
           )}
         </div>
         {imageStatus && <p className="image-status">{imageStatus}</p>}
-        {draft.image && <img className="image-preview" src={draft.image} alt="" />}
+        <RecipeImage className="image-preview" image={draft.image} />
       </section>
     </form>
   );

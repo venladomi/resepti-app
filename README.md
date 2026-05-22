@@ -103,9 +103,9 @@ Reseptiin voi lisätä yhden kuvan kolmella tavalla:
 - kopioi kuva ja paina reseptilomakkeessa `Liitä kuva`
 - kopioi kuva ja liitä se kuvan alueelle näppäimillä `Ctrl + V`
 
-Sovellus pienentää ja pakkaa kuvan ennen tallennusta. Kuva tallennetaan reseptin mukana, ei pelkkänä linkkinä.
+Sovellus pienentää ja pakkaa kuvan ennen tallennusta. Kuva tallennetaan selaimen kuvavarastoon, ei pelkkänä linkkinä.
 
-Kuvat vievät selaimen tallennustilaa tekstiä enemmän. Jos selain ilmoittaa tallennustilan olevan täynnä, vie ensin varmuuskopio ja tallenna resepti ilman kuvaa tai poista kuvia vanhoista resepteistä.
+Kuvat vievät selaimen tallennustilaa tekstiä enemmän. Sovellus pitää reseptitekstit ja kuvat erillään, jotta kuvat eivät täytä reseptilistan pientä tallennustilaa.
 
 ## Reseptilista
 
@@ -137,17 +137,19 @@ ReseptiApp_v1_toimiva.zip
 
 ## Missä reseptit tallennetaan
 
-Reseptejä ei tallenneta lähdekoodiin. Ne tallennetaan selaimen localStorageen avaimella:
+Reseptejä ei tallenneta lähdekoodiin. Reseptien tekstidata tallennetaan selaimen localStorageen avaimella:
 
 ```text
 reseptiapp.recipes.v1
 ```
 
-Tämä tarkoittaa, että reseptit ovat kyseisessä selaimessa ja kyseisellä laitteella. Jos vaihdat selainta, tyhjennät selaimen sivustotiedot tai käytät toista konetta, reseptit eivät automaattisesti seuraa mukana.
+Reseptikuvat tallennetaan saman selaimen erilliseen kuvavarastoon eli IndexedDB-tallennukseen. Reseptin `image`-kentässä on vain kuvaviite, joten kuvadata ei täytä localStorage-reseptilistaa.
+
+Tämä tarkoittaa, että reseptit ja kuvat ovat kyseisessä selaimessa ja kyseisellä laitteella. Jos vaihdat selainta, tyhjennät selaimen sivustotiedot tai käytät toista konetta, reseptit eivät automaattisesti seuraa mukana.
 
 ## Varmuuskopion vienti ja tuonti
 
-Sovelluksessa on `Vie varmuuskopio` -painike. Se lataa kaikki reseptit JSON-tiedostona omalle koneelle.
+Sovelluksessa on `Vie varmuuskopio` -painike. Se lataa kaikki reseptit JSON-tiedostona omalle koneelle. Varmuuskopioon lisätään myös kuvien sisältö, vaikka sovellus säilyttää kuvat käytön aikana erillisessä selaimen kuvavarastossa.
 
 Sovelluksessa on myös `Tuo varmuuskopio` -painike. Sillä voit tuoda aiemmin tallennetun JSON-varmuuskopion takaisin sovellukseen.
 
@@ -209,4 +211,4 @@ Sovellus käyttää samaa rakennetta jokaiselle reseptille, jotta Supabase voida
 }
 ```
 
-Kuva tallennetaan reseptin mukana pienennettynä data-osoitteena. Sovellus pienentää ja pakkaa kuvan ennen tallennusta ja käyttää enintään 1200 pikselin leveyttä.
+Kuva tallennetaan reseptin mukana kuvaviitteenä. Varsinainen kuva on selaimen erillisessä kuvavarastossa pienennettynä ja pakattuna; varmuuskopiossa kuva kulkee reseptin mukana. Sovellus käyttää enintään 1200 pikselin leveyttä.
