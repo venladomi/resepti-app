@@ -89,7 +89,9 @@ Reseptin raaka-aineissa, ohjeissa ja muistiinpanoissa voi lihavoida tekstiä kir
 **Juustokastike**
 ```
 
-Reseptin katselunäkymässä raaka-aineiden kohdalla voi vaihtaa annosmäärää. Tämä skaalaa selvästi rivin alussa olevia määriä, esimerkiksi `400 g`, `1 dl`, `1-2 rkl` ja `½ tl`.
+Reseptin katselunäkymässä raaka-aineiden kohdalla voi vaihtaa annosmäärää. Tämä skaalaa selvästi rivin alussa olevia raaka-ainemääriä, esimerkiksi `400 g`, `1 dl`, `1-2 rkl` ja `½ tl`.
+
+Sovellus skaalaa myös ohjetekstissä olevia yleisiä yksikkömääriä, kuten `2 dl` tai `1-2 dl`.
 
 Skaalaus ei muuta alkuperäistä tallennettua reseptiä. Se on tarkoitettu ruoanlaiton avuksi katselunäkymässä.
 
@@ -157,11 +159,28 @@ Sovellus näyttää varoituksen, jos varmuuskopiota ei ole vielä tehty tai viim
 
 ## Reseptin tuonti tekstistä
 
-Painikkeella `Tuo tekstistä` voi liittää reseptin tekstin yhteen kenttään. Sovellus yrittää jakaa tekstistä nimen, annokset, raaka-aineet, ohjeet, ajat ja lähdelinkin.
+Painikkeella `Tuo tekstistä` voi liittää siivotun reseptitekstin yhteen kenttään. Tekstin voi siivota ensin esimerkiksi Windowsin Muistiossa ja kopioida sieltä sovellukseen.
 
 Tuonti ei tallenna reseptiä heti. Se avaa esitäytetyn reseptilomakkeen, jossa tiedot voi tarkistaa ja korjata ennen tallennusta.
 
-Tekstintuonti toimii parhaiten, kun tekstissä on selkeät otsikot kuten `Raaka-aineet` ja `Ohjeet`.
+Tekstintuonti toimii parhaiten tällä mallilla:
+
+```text
+Nimi: 
+Kategoria: 
+Tagit: 
+Annokset: 
+Aktiivinen aika: 
+Passiivinen aika: 
+Kokonaisaika: 
+Lähde: 
+
+Raaka-aineet:
+
+Ohjeet:
+
+Muistiinpanot:
+```
 
 ## Reseptin tietorakenne
 
@@ -179,6 +198,7 @@ Sovellus käyttää samaa rakennetta jokaiselle reseptille, jotta Supabase voida
   "servings": "string",
   "prepTime": "string",
   "cookTime": "string",
+  "totalTime": "string",
   "sourceUrl": "string",
   "image": "string",
   "favorite": false,

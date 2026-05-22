@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const APP_VERSION = "1.5";
+const APP_VERSION = "1.6";
 const STORAGE_KEY = "reseptiapp.recipes.v1";
 const BACKUP_KEY = "reseptiapp.latestBackupAt.v1";
 const BACKUP_STALE_DAYS = 14;
@@ -20,6 +20,7 @@ const emptyRecipe = () => {
     servings: "",
     prepTime: "",
     cookTime: "",
+    totalTime: "",
     sourceUrl: "",
     image: "",
     favorite: false,
@@ -50,6 +51,7 @@ function normalizeRecipe(recipe) {
     servings: String(recipe?.servings || ""),
     prepTime: String(recipe?.prepTime || ""),
     cookTime: String(recipe?.cookTime || ""),
+    totalTime: String(recipe?.totalTime || ""),
     sourceUrl: String(recipe?.sourceUrl || ""),
     image: String(recipe?.image || ""),
     favorite: Boolean(recipe?.favorite),
@@ -247,6 +249,24 @@ function scaleIngredientText(value, factor) {
     .join("\n");
 }
 
+const INSTRUCTION_UNIT_PATTERN =
+  "kg|mg|g|l|dl|cl|ml|rkl|tl|kpl|pkt|prk|pss|pussia?|purkkia?|kuutiota?";
+
+function scaleInstructionText(value, factor) {
+  if (!Number.isFinite(factor) || factor <= 0 || Math.abs(factor - 1) < 0.001) {
+    return value;
+  }
+
+  const amountWithUnit = new RegExp(
+    `(${AMOUNT_PATTERN})(\\s*(?:${INSTRUCTION_UNIT_PATTERN})(?=[\\s.,;:!?)\\]]|$))`,
+    "giu"
+  );
+
+  return String(value || "").replace(amountWithUnit, (match, amount, unit) => {
+    return `${scaleAmountText(amount, factor)}${unit}`;
+  });
+}
+
 async function resizeRecipeImage(file) {
   const imageUrl = URL.createObjectURL(file);
 
@@ -317,6 +337,63 @@ function getTextSection(line) {
   return "";
 }
 
+const RECIPE_TEXT_TEMPLATE = `Nimi: 
+Kategoria: 
+Tagit: 
+Annokset: 
+Aktiivinen aika: 
+Passiivinen aika: 
+Kokonaisaika: 
+Lähde: 
+
+Raaka-aineet:
+
+Ohjeet:
+
+Muistiinpanot:`;
+
+function normalizeImportLabel(value) {
+  return value
+    .toLowerCase()
+    .replace(/[äå]/g, "a")
+    .replace(/ö/g, "o")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getImportField(line) {
+  const match = line.match(/^([^:：]+)[:：]\s*(.*)$/);
+  if (!match) return null;
+
+  const label = normalizeImportLabel(match[1]);
+  const fieldMap = {
+    nimi: "title",
+    otsikko: "title",
+    kategoria: "category",
+    tagit: "tags",
+    annokset: "servings",
+    annosmaara: "servings",
+    "aktiivinen aika": "prepTime",
+    aktiivinen: "prepTime",
+    valmisteluaika: "prepTime",
+    "passiivinen aika": "cookTime",
+    passiivinen: "cookTime",
+    kypsennysaika: "cookTime",
+    paistoaika: "cookTime",
+    kokonaisaika: "totalTime",
+    kokonaisvalmistusaika: "totalTime",
+    "valmistusaika yhteensa": "totalTime",
+    yhteensa: "totalTime",
+    lahde: "sourceUrl",
+    lahdelinkki: "sourceUrl",
+    linkki: "sourceUrl",
+    source: "sourceUrl",
+  };
+
+  const field = fieldMap[label];
+  return field ? { field, value: match[2].trim() } : null;
+}
+
 function stripRecipeTextBullet(line) {
   return line.replace(/^\s*(?:[-*•◆◇♦◦▪▫🔸]\s*)/, "").trim();
 }
@@ -357,6 +434,19 @@ function parseRecipeFromText(rawText, sourceUrl) {
   recipe.sourceUrl = sourceUrl.trim();
 
   for (const line of lines) {
+    const field = getImportField(line);
+    if (field) {
+      currentSection = "";
+
+      if (field.field === "tags") {
+        recipe.tags = splitTags(field.value);
+      } else if (field.value) {
+        recipe[field.field] = field.value;
+      }
+
+      continue;
+    }
+
     const section = getTextSection(line);
     if (section) {
       currentSection = section;
@@ -377,13 +467,18 @@ function parseRecipeFromText(rawText, sourceUrl) {
     }
 
     const lowerLine = line.toLowerCase();
-    if (!recipe.prepTime && /(valmisteluaika|valmistusaika|prep)/i.test(lowerLine)) {
+    if (!recipe.prepTime && /(aktiivinen aika|valmisteluaika|prep)/i.test(lowerLine)) {
       recipe.prepTime = extractTimeValue(line);
       continue;
     }
 
-    if (!recipe.cookTime && /(kypsennys|paistoaika|paisto|cook)/i.test(lowerLine)) {
+    if (!recipe.cookTime && /(passiivinen aika|kypsennys|paistoaika|paisto|cook)/i.test(lowerLine)) {
       recipe.cookTime = extractTimeValue(line);
+      continue;
+    }
+
+    if (!recipe.totalTime && /(kokonaisaika|kokonaisvalmistusaika|yhteensä|yhteensa)/i.test(lowerLine)) {
+      recipe.totalTime = extractTimeValue(line);
       continue;
     }
 
@@ -899,6 +994,9 @@ function RecipeTextImport({ onImport, onCancel }) {
 
       <label>
         Reseptin teksti
+        <span className="field-help">
+          Siivoa teksti ensin esimerkiksi Muistiossa ja liitä se tänne otsikoiden avulla.
+        </span>
         <textarea
           rows="18"
           value={rawText}
@@ -906,7 +1004,7 @@ function RecipeTextImport({ onImport, onCancel }) {
             setRawText(event.target.value);
             setError("");
           }}
-          placeholder={"Liitä tähän reseptin nimi, raaka-aineet ja ohjeet."}
+          placeholder={RECIPE_TEXT_TEMPLATE}
         />
       </label>
 
@@ -931,6 +1029,7 @@ function RecipeView({ recipe, onEdit, onDelete, onFavorite }) {
   const targetServingsNumber = parsePositiveNumber(targetServings);
   const scalingFactor = baseServings && targetServingsNumber ? targetServingsNumber / baseServings : 1;
   const scaledIngredients = scaleIngredientText(recipe.ingredients, scalingFactor);
+  const scaledInstructions = scaleInstructionText(recipe.instructions, scalingFactor);
 
   useEffect(() => {
     setTargetServings(baseServings ? String(baseServings) : "");
@@ -965,8 +1064,9 @@ function RecipeView({ recipe, onEdit, onDelete, onFavorite }) {
 
       <div className="quick-facts">
         <Fact label="Annoksia" value={recipe.servings} />
-        <Fact label="Valmistelu" value={recipe.prepTime} />
-        <Fact label="Kypsennys" value={recipe.cookTime} />
+        <Fact label="Aktiivinen aika" value={recipe.prepTime} />
+        <Fact label="Passiivinen aika" value={recipe.cookTime} />
+        <Fact label="Kokonaisaika" value={recipe.totalTime} />
       </div>
 
       {recipe.tags.length > 0 && (
@@ -1000,7 +1100,7 @@ function RecipeView({ recipe, onEdit, onDelete, onFavorite }) {
 
       <section className="recipe-section">
         <h3>Ohjeet</h3>
-        <RecipeText value={recipe.instructions || "Ei ohjeita."} />
+        <RecipeText value={scaledInstructions || "Ei ohjeita."} />
       </section>
 
       {recipe.notes && (
@@ -1308,7 +1408,7 @@ function RecipeForm({ draft, setDraft, isEditing, categories, onSave, onCancel, 
         </label>
 
         <label>
-          Valmisteluaika
+          Aktiivinen aika
           <input
             value={draft.prepTime}
             onChange={(event) => updateField("prepTime", event.target.value)}
@@ -1316,10 +1416,18 @@ function RecipeForm({ draft, setDraft, isEditing, categories, onSave, onCancel, 
         </label>
 
         <label>
-          Kypsennysaika
+          Passiivinen aika
           <input
             value={draft.cookTime}
             onChange={(event) => updateField("cookTime", event.target.value)}
+          />
+        </label>
+
+        <label>
+          Kokonaisaika
+          <input
+            value={draft.totalTime}
+            onChange={(event) => updateField("totalTime", event.target.value)}
           />
         </label>
 
