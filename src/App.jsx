@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const APP_VERSION = "1.7";
+const APP_VERSION = "1.8";
 const STORAGE_KEY = "reseptiapp.recipes.v1";
 const BACKUP_KEY = "reseptiapp.latestBackupAt.v1";
 const BACKUP_STALE_DAYS = 14;
 const IMPORT_WARNING_RECIPE_COUNT = 10;
+const MAX_RECIPE_IMAGE_WIDTH = 1200;
+// Kuvat tallennetaan reseptin mukana localStorageen, jonka tila on rajallinen.
+// Tavoite pitää uudet kuvat riittävän pieninä, jotta yksi kuva ei täytä tallennustilaa.
+const RECIPE_IMAGE_TARGET_LENGTH = 220000;
 
 const emptyRecipe = () => {
   const now = new Date().toISOString();
@@ -78,7 +82,33 @@ function loadRecipes() {
 function saveRecipes(recipes) {
   // Tämä on ainoa paikka, jossa reseptilista kirjoitetaan selaimen localStorageen.
   // Kun Supabase lisätään myöhemmin, tämän rajapinnan voi korvata ilman että reseptin rakenne muuttuu.
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(recipes));
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(recipes));
+    return { ok: true };
+  } catch (error) {
+    console.error("Reseptien tallentaminen epäonnistui", error);
+    return { ok: false, error };
+  }
+}
+
+function isStorageQuotaError(error) {
+  return (
+    error?.name === "QuotaExceededError" ||
+    error?.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+    error?.code === 22 ||
+    error?.code === 1014
+  );
+}
+
+function getRecipeSaveErrorMessage(error) {
+  if (isStorageQuotaError(error)) {
+    return (
+      "Tallennus ei onnistunut, koska selaimen tallennustila on täynnä. " +
+      "Vie varmuuskopio ja tallenna resepti ilman kuvaa tai poista kuvia vanhoista resepteistä."
+    );
+  }
+
+  return "Tallennus ei onnistunut. Resepti jäi lomakkeeseen, joten voit yrittää uudelleen.";
 }
 
 function formatDateTime(value) {
@@ -341,25 +371,58 @@ async function resizeRecipeImage(file) {
 
   try {
     const image = await loadImage(imageUrl);
-    const scale = Math.min(1, 1200 / image.width);
-    const width = Math.round(image.width * scale);
-    const height = Math.round(image.height * scale);
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
+    const widths = [
+      MAX_RECIPE_IMAGE_WIDTH,
+      Math.round(MAX_RECIPE_IMAGE_WIDTH * 0.8),
+      Math.round(MAX_RECIPE_IMAGE_WIDTH * 0.6),
+      Math.round(MAX_RECIPE_IMAGE_WIDTH * 0.45),
+      Math.round(MAX_RECIPE_IMAGE_WIDTH * 0.35),
+    ];
+    const availableWidths = [...new Set(widths.map((width) => Math.min(width, image.width)))];
+    const qualities = [0.8, 0.68, 0.56, 0.44];
+    let smallestImage = "";
 
-    const context = canvas.getContext("2d");
-    context.drawImage(image, 0, 0, width, height);
+    for (const width of availableWidths) {
+      const canvas = drawImageToCanvas(image, width);
 
-    const webp = canvas.toDataURL("image/webp", 0.82);
-    if (webp.startsWith("data:image/webp")) {
-      return webp;
+      for (const quality of qualities) {
+        const dataUrl = getCompressedCanvasDataUrl(canvas, quality);
+
+        if (!smallestImage || dataUrl.length < smallestImage.length) {
+          smallestImage = dataUrl;
+        }
+
+        if (dataUrl.length <= RECIPE_IMAGE_TARGET_LENGTH) {
+          return dataUrl;
+        }
+      }
     }
 
-    return canvas.toDataURL("image/jpeg", 0.84);
+    return smallestImage;
   } finally {
     URL.revokeObjectURL(imageUrl);
   }
+}
+
+function drawImageToCanvas(image, width) {
+  const scale = Math.min(1, width / image.width);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(image.width * scale);
+  canvas.height = Math.round(image.height * scale);
+
+  const context = canvas.getContext("2d");
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+  return canvas;
+}
+
+function getCompressedCanvasDataUrl(canvas, quality) {
+  const webp = canvas.toDataURL("image/webp", quality);
+  if (webp.startsWith("data:image/webp")) {
+    return webp;
+  }
+
+  return canvas.toDataURL("image/jpeg", quality);
 }
 
 function loadImage(src) {
@@ -590,10 +653,6 @@ export default function App() {
   const filtersActive = Boolean(searchTerm || categoryFilter || tagFilter || favoritesOnly);
 
   useEffect(() => {
-    saveRecipes(recipes);
-  }, [recipes]);
-
-  useEffect(() => {
     if (mode !== "view") return;
 
     if (!selectedId && recipes.length > 0) {
@@ -694,6 +753,19 @@ export default function App() {
     setStatus("Tarkista tuotu resepti ja tallenna se.");
   }
 
+  function storeRecipes(nextRecipes, successMessage = "") {
+    const result = saveRecipes(nextRecipes);
+
+    if (!result.ok) {
+      setStatus(getRecipeSaveErrorMessage(result.error));
+      return false;
+    }
+
+    setRecipes(nextRecipes);
+    if (successMessage) setStatus(successMessage);
+    return true;
+  }
+
   function saveDraft(event) {
     event.preventDefault();
 
@@ -712,34 +784,32 @@ export default function App() {
       return;
     }
 
-    setRecipes((currentRecipes) => {
-      const exists = currentRecipes.some((recipe) => recipe.id === cleanDraft.id);
-      if (exists) {
-        return currentRecipes.map((recipe) => (recipe.id === cleanDraft.id ? cleanDraft : recipe));
-      }
+    const exists = recipes.some((recipe) => recipe.id === cleanDraft.id);
+    const nextRecipes = exists
+      ? recipes.map((recipe) => (recipe.id === cleanDraft.id ? cleanDraft : recipe))
+      : [cleanDraft, ...recipes];
 
-      return [cleanDraft, ...currentRecipes];
-    });
+    if (!storeRecipes(nextRecipes, "Resepti tallennettu.")) return;
 
     setSelectedId(cleanDraft.id);
     setMode("view");
-    setStatus("Resepti tallennettu.");
   }
 
   function deleteRecipe(recipe) {
     const ok = window.confirm(`Poistetaanko resepti "${recipe.title}"?`);
     if (!ok) return;
 
-    setRecipes((currentRecipes) => currentRecipes.filter((item) => item.id !== recipe.id));
+    const nextRecipes = recipes.filter((item) => item.id !== recipe.id);
+    if (!storeRecipes(nextRecipes, "Resepti poistettu.")) return;
+
     setMode("view");
-    setStatus("Resepti poistettu.");
   }
 
   function toggleFavorite(recipe) {
     const now = new Date().toISOString();
 
-    setRecipes((currentRecipes) =>
-      currentRecipes.map((item) =>
+    storeRecipes(
+      recipes.map((item) =>
         item.id === recipe.id ? { ...item, favorite: !item.favorite, updatedAt: now } : item
       )
     );
@@ -763,8 +833,13 @@ export default function App() {
     link.click();
     URL.revokeObjectURL(url);
 
-    window.localStorage.setItem(BACKUP_KEY, exportedAt);
-    setBackupDate(exportedAt);
+    try {
+      window.localStorage.setItem(BACKUP_KEY, exportedAt);
+      setBackupDate(exportedAt);
+    } catch (error) {
+      console.warn("Varmuuskopion päivämäärää ei voitu tallentaa", error);
+    }
+
     setStatus("Varmuuskopio ladattu JSON-tiedostona.");
   }
 
@@ -818,8 +893,11 @@ export default function App() {
         }
       });
 
-      setRecipes([...byId.values()].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)));
-      setStatus(`Tuonti valmis. Lisätty ${added}, korvattu ${replaced}.`);
+      const nextRecipes = [...byId.values()].sort(
+        (a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)
+      );
+
+      storeRecipes(nextRecipes, `Tuonti valmis. Lisätty ${added}, korvattu ${replaced}.`);
     } catch (error) {
       console.error("Varmuuskopion tuonti epäonnistui", error);
       setStatus("Varmuuskopion tuonti epäonnistui. Tarkista JSON-tiedosto.");

@@ -103,7 +103,9 @@ Reseptiin voi lisätä yhden kuvan kolmella tavalla:
 - kopioi kuva ja paina reseptilomakkeessa `Liitä kuva`
 - kopioi kuva ja liitä se kuvan alueelle näppäimillä `Ctrl + V`
 
-Sovellus pienentää kuvan ennen tallennusta. Kuva tallennetaan reseptin mukana, ei pelkkänä linkkinä.
+Sovellus pienentää ja pakkaa kuvan ennen tallennusta. Kuva tallennetaan reseptin mukana, ei pelkkänä linkkinä.
+
+Kuvat vievät selaimen tallennustilaa tekstiä enemmän. Jos selain ilmoittaa tallennustilan olevan täynnä, vie ensin varmuuskopio ja tallenna resepti ilman kuvaa tai poista kuvia vanhoista resepteistä.
 
 ## Reseptilista
 
@@ -207,4 +209,4 @@ Sovellus käyttää samaa rakennetta jokaiselle reseptille, jotta Supabase voida
 }
 ```
 
-Kuva tallennetaan reseptin mukana pienennettynä data-osoitteena. Sovellus pienentää kuvan ennen tallennusta ja käyttää enintään 1200 pikselin leveyttä.
+Kuva tallennetaan reseptin mukana pienennettynä data-osoitteena. Sovellus pienentää ja pakkaa kuvan ennen tallennusta ja käyttää enintään 1200 pikselin leveyttä.
